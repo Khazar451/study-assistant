@@ -8,7 +8,7 @@ def get_text_splitter(chunk_size: int = 500, chunk_overlap: int = 50) -> Recursi
         chunk_overlap = chunk_overlap,
         length_function = len,
         add_start_index = True,
-        seperators = ["\n\n", "\n", ". ", " ", ""]
+        separators = ["\n\n", "\n", ". ", " ", ""]
     )
 
 def chunk_documents(
