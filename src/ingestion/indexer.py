@@ -60,6 +60,8 @@ class ChromaIndexer:
             chunk_id = str(chunk.id)
         elif hasattr(chunk, "chunk_id") and chunk.chunk_id:
             chunk_id = str(chunk.chunk_id)
+        elif hasattr(chunk, "metadata") and isinstance(chunk.metadata, dict):
+            chunk_id = str(chunk.metadata.get("id", chunk.metadata.get("chunk_id", ""))) or None
         elif isinstance(chunk, dict):
             chunk_id = str(chunk.get("id", chunk.get("chunk_id", ""))) or None
 
