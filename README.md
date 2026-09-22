@@ -1,1 +1,1 @@
-Repository for NebiousxNvidia Hackhathon
+Repository for NebiusxNvidia Hackhathon
