@@ -78,11 +78,15 @@ class NvidiaEmbedder:
         if not chunks:
             return []
 
-        # Extract text from dict or object
-        texts = [
-            chunk["text"] if isinstance(chunk, dict) else chunk.text
-            for chunk in chunks
-        ]
+        # Extract text from dict, LangChain Document, or custom object
+        texts = []
+        for chunk in chunks:
+            if hasattr(chunk, "page_content"):
+                texts.append(chunk.page_content)
+            elif isinstance(chunk, dict):
+                texts.append(chunk.get("text", chunk.get("page_content", "")))
+            else:
+                texts.append(getattr(chunk, "text", ""))
 
         embeddings = self.embed_batch(
             texts, input_type=input_type, batch_size=batch_size
@@ -92,6 +96,12 @@ class NvidiaEmbedder:
             if isinstance(chunk, dict):
                 chunk["embedding"] = emb
             else:
-                chunk.embedding = emb
+                try:
+                    chunk.embedding = emb
+                except (AttributeError, ValueError):
+                    if hasattr(chunk, "metadata") and isinstance(chunk.metadata, dict):
+                        chunk.metadata["embedding"] = emb
+                    else:
+                        raise
 
         return chunks
