@@ -8,7 +8,7 @@ __pycache__/
 venv/
 .venv/
 env/
-
+.env/
 # Ortam değişkenleri ve gizli anahtarlar
 .env
 
