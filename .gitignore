@@ -11,6 +11,8 @@ env/
 .env/
 # Ortam değişkenleri ve gizli anahtarlar
 .env
+.env.local
+.env.*
 
 # ChromaDB ve yerel veri klasörleri
 chroma_db/
