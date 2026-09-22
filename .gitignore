@@ -1,0 +1,17 @@
+# Python bytecode ve önbellekler
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Sanal ortam (Virtual Environment)
+venv/
+.venv/
+env/
+
+# Ortam değişkenleri ve gizli anahtarlar
+.env
+
+# ChromaDB ve yerel veri klasörleri
+chroma_db/
+*chroma.sqlite3
