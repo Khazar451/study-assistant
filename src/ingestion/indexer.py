@@ -181,6 +181,25 @@ class ChromaIndexer:
         if ids or where:
             self.collection.delete(ids=ids, where=where)
 
+    def delete_by_path(self, file_path: str) -> None:
+        """Delete all chunks originating from a specific file to prevent ghost chunks."""
+        self.collection.delete(where={"file_path": str(file_path)})
+
+    def upsert(
+        self,
+        ids: List[str],
+        documents: List[str],
+        embeddings: Optional[List[List[float]]] = None,
+        metadatas: Optional[List[Dict[str, Any]]] = None,
+    ) -> None:
+        """Direct upsert into collection."""
+        kwargs: Dict[str, Any] = {"ids": ids, "documents": documents}
+        if embeddings is not None:
+            kwargs["embeddings"] = embeddings
+        if metadatas is not None:
+            kwargs["metadatas"] = metadatas
+        self.collection.upsert(**kwargs)
+
     def reset(self) -> None:
         # Clear all chunks from the current collection.
         self.client.delete_collection(name=self.collection_name)

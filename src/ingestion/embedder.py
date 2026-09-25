@@ -69,6 +69,10 @@ class NvidiaEmbedder:
 
         return all_embeddings
 
+    def embed_documents(self, texts: List[str], batch_size: int = 32) -> List[List[float]]:
+        """Generate embeddings for documents with input_type='passage' (LangChain naming convention)."""
+        return self.embed_batch(texts, input_type="passage", batch_size=batch_size)
+
     def embed_chunks(
         self,
         chunks: List[Union[dict, Any]],
