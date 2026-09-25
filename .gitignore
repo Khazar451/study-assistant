@@ -17,3 +17,7 @@ env/
 # ChromaDB ve yerel veri klasörleri
 chroma_db/
 *chroma.sqlite3
+
+# Antigravity agent & local config
+.agent/
+.gemini/
