@@ -17,7 +17,7 @@ class QueryAugmenter:
     3. HyDE (Hypothetical Document Embeddings): Synthesizes a hypothetical answer passage for passage-to-passage search.
     """
 
-    DEFAULT_MODEL = "meta/llama-3.1-8b-instruct"
+    DEFAULT_MODEL = "meta/llama-3.2-11b-vision-instruct"
     DEFAULT_BASE_URL = "https://integrate.api.nvidia.com/v1"
 
     def __init__(

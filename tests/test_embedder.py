@@ -8,7 +8,8 @@ from src.ingestion.embedder import NvidiaEmbedder
 
 def test_init_missing_api_key_raises_error(monkeypatch):
     monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
-    with pytest.raises(ValueError, match="NVIDIA_API_KEY is not set"):
+    monkeypatch.delenv("NVIDIA_EMBEDDER_KEY", raising=False)
+    with pytest.raises(ValueError, match="API key not set"):
         NvidiaEmbedder(api_key=None)
 
 

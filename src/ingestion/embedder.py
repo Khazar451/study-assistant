@@ -20,11 +20,15 @@ class NvidiaEmbedder:
         base_url: Optional[str] = None,
         model: Optional[str] = None,
     ):
-        self.api_key = api_key or os.getenv("NVIDIA_API_KEY")
+        self.api_key = (
+            api_key
+            or os.getenv("NVIDIA_EMBEDDER_KEY")
+            or os.getenv("NVIDIA_API_KEY")
+        )
         if not self.api_key:
             raise ValueError(
-                "NVIDIA_API_KEY is not set. Please set the environment variable "
-                "or pass api_key to NvidiaEmbedder."
+                "NVIDIA API key not set. Please set NVIDIA_EMBEDDER_KEY or "
+                "NVIDIA_API_KEY environment variable, or pass api_key."
             )
 
         self.base_url = base_url or os.getenv("NVIDIA_BASE_URL", self.DEFAULT_BASE_URL)
