@@ -113,3 +113,49 @@ def test_retriever_format_context():
 def test_retriever_format_context_empty():
     retriever = StudyRetriever(indexer=MagicMock(), embedder=MagicMock())
     assert retriever.format_context([]) == ""
+
+
+def test_retrieve_augmented_fallback_when_no_augmenter(mock_embedder, in_memory_indexer):
+    retriever = StudyRetriever(indexer=in_memory_indexer, embedder=mock_embedder, augmenter=None)
+    results = retriever.retrieve_augmented("Newton's law")
+    assert len(results) == 2
+    assert "Newton" in results[0]["text"]
+
+
+def test_retrieve_augmented_with_multi_query(mock_embedder, in_memory_indexer):
+    mock_augmenter = MagicMock()
+    # Augmenter expands into two queries
+    mock_augmenter.augment.return_value = ["law of inertia", "Newton motion principle"]
+
+    retriever = StudyRetriever(
+        indexer=in_memory_indexer,
+        embedder=mock_embedder,
+        augmenter=mock_augmenter,
+        top_k=5,
+    )
+
+    results = retriever.retrieve_augmented("inertia", mode="expand")
+
+    mock_augmenter.augment.assert_called_once_with(query="inertia", mode="expand")
+    # Verify results are deduplicated and non-empty
+    assert len(results) <= 2
+    assert any("Newton" in r["text"] for r in results)
+
+
+def test_retrieve_with_augment_flag(mock_embedder, in_memory_indexer):
+    mock_augmenter = MagicMock()
+    mock_augmenter.augment.return_value = ["derivative slope tangent"]
+
+    retriever = StudyRetriever(
+        indexer=in_memory_indexer,
+        embedder=mock_embedder,
+        augmenter=mock_augmenter,
+    )
+
+    results = retriever.retrieve("calculus", where={"subject": "math"}, augment=True, augment_mode="rewrite")
+
+    mock_augmenter.augment.assert_called_once_with(query="calculus", mode="rewrite")
+    assert len(results) == 1
+    assert "derivative" in results[0]["text"]
+
+
