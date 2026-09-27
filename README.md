@@ -6,11 +6,12 @@
 [![Python Version](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 [![NVIDIA NIM](https://img.shields.io/badge/NVIDIA-NIM%20Accelerated-76B900.svg?logo=nvidia)](https://developer.nvidia.com/nim)
 [![Nebius AI Studio](https://img.shields.io/badge/Nebius-AI%20Studio%20Cloud-00F5D4.svg)](https://studio.nebius.ai/)
+[![Global AI Hackathon](https://img.shields.io/badge/Nebius%20x%20NVIDIA-Global%20AI%20Hackathon-76B900.svg?logo=nvidia&logoColor=white)](https://github.com/Khazar451/study-assistant)
 [![Vector DB](https://img.shields.io/badge/ChromaDB-Persistent%20HNSW-FF6B6B.svg)](https://www.trychroma.com/)
-[![CI Status](https://github.com/hamza-jpg/study-assistant/actions/workflows/test.yml/badge.svg)](https://github.com/hamza-jpg/study-assistant/actions)
+[![CI Status](https://github.com/Khazar451/study-assistant/actions/workflows/test.yml/badge.svg)](https://github.com/Khazar451/study-assistant/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-*Developed for the **Nebius x NVIDIA Hackathon**.*
+*Developed for the **Nebius x NVIDIA Global AI Hackathon**.*
 
 ---
 
@@ -77,10 +78,11 @@ flowchart TB
         I --> J[ChromaDB Nearest Neighbor Search]
         J --> K[Max-Score Pooling & Deduplication]
         K --> L[Cosine Similarity Threshold Filter]
+        L --> RR[StudyReranker<br/>Cross-Encoder / LLM Listwise Scoring<br/>meta/llama-3.2-11b-vision-instruct]
     end
 
     subgraph GENERATION["Phase 3: Grounded Pedagogical Generation"]
-        L --> M[Structured Context Formatter<br/>with Page Metadata]
+        RR --> M[Structured Context Formatter<br/>with Page Metadata]
         M --> N[StudyGenerator Engine]
         N -.->|Primary Provider| O1[NVIDIA NIM Cloud API]
         N -.->|Fallback Provider| O2[Nebius AI Studio Studio API]
@@ -117,6 +119,7 @@ Rather than relying on naive single-shot vector lookups, the retrieval layer imp
 | :--- | :--- | :--- |
 | [`query_augmenter.py`](src/retrieval/query_augmenter.py) | `QueryAugmenter` | Implements three prompt-engineered retrieval strategies via NVIDIA NIM LLMs (`meta/llama-3.2-11b-vision-instruct`):<br/>• **Query Rewriting:** Converts informal student queries into technical academic terminology.<br/>• **Multi-Query Expansion:** Generates diverse paraphrases and sub-queries to maximize recall.<br/>• **HyDE (Hypothetical Document Embeddings):** Generates a synthesized textbook passage answering the question, enabling passage-to-passage semantic matching. |
 | [`retriever.py`](src/retrieval/retriever.py) | `StudyRetriever` | Computes cosine similarity ($1 - \text{distance}$), enforces configurable minimum score thresholds (`score_threshold`), executes multi-query search with max-score pooling deduplication, and formats context blocks with source and page tags (`format_context`). |
+| [`reranker.py`](src/retrieval/reranker.py) | `StudyReranker` | Semantic cross-scoring layer. Evaluates candidate chunks via single-roundtrip LLM listwise scoring (`meta/llama-3.2-11b-vision-instruct`) or dedicated NVIDIA `/v1/ranking` microservices. Features sigmoid logit normalization, monotonic negative-safe imputation ($\min(\text{scores}) - 10^{-4}$), and stable tie-breaking. |
 
 ### 3.3 Grounded Generation Engine & Guardrails (`src/generation/`)
 
@@ -131,17 +134,18 @@ The generation layer ensures student answers are pedagogical, structured, and st
 
 ### 3.4 Automated Testing & CI/CD Pipeline (`tests/` & `.github/`)
 
-- **8 Comprehensive Unit Test Suites:**
-  - `tests/test_loader.py`: Validates PDF page extraction, text reading, and unsupported format rejections.
-  - `tests/test_chunker.py`: Tests boundary preservation, overlap logic, and empty input handling.
-  - `tests/test_embedder.py`: Validates API payload construction, input typing (`passage` vs `query`), and batching.
-  - `tests/test_indexer.py`: Tests ChromaDB upsert, query similarity, and path-based deletion.
-  - `tests/test_pipeline.py`: Tests end-to-end ingestion flow and error isolation.
-  - `tests/test_query_augmenter.py`: Verifies rewrite, expand, and HyDE prompt executions with mocked LLM clients.
-  - `tests/test_retriever.py`: Tests similarity scoring, threshold filtering, and multi-query pooling.
-  - `tests/test_generator.py`: Verifies provider switching (NVIDIA vs Nebius), citations, and streaming token yields.
+- **9 Comprehensive Unit Test Suites (73 Tests Passing in ~1.08s):**
+  - `tests/test_loader.py`: Validates PDF page extraction, text reading, and unsupported format rejections (5 tests).
+  - `tests/test_chunker.py`: Tests boundary preservation, overlap logic, and empty input handling (5 tests).
+  - `tests/test_embedder.py`: Validates API payload construction, input typing (`passage` vs `query`), and batching (6 tests).
+  - `tests/test_indexer.py`: Tests ChromaDB upsert, query similarity, and path-based deletion (4 tests).
+  - `tests/test_pipeline.py`: Tests end-to-end ingestion flow and error isolation (3 tests).
+  - `tests/test_query_augmenter.py`: Verifies rewrite, expand, and HyDE prompt executions with mocked LLM clients (11 tests).
+  - `tests/test_retriever.py`: Tests similarity scoring, threshold filtering, and multi-query pooling (9 tests).
+  - `tests/test_reranker.py`: Validates semantic reranking, sigmoid normalization, monotonic negative imputation, index mapping, and fallback paths (20 tests).
+  - `tests/test_generator.py`: Verifies provider switching (NVIDIA vs Nebius), citations, and streaming token yields (10 tests).
 - **Continuous Integration (CI):**
-  - Configured via `.github/workflows/test.yml` running Pytest automatically on push and pull request against Python 3.11.
+  - Configured via `.github/workflows/test.yml` running Pytest automatically on push and pull request against Python 3.11. All 73 tests run green on GitHub Actions without consuming live API credits.
 
 ---
 
@@ -158,17 +162,18 @@ gantt
     NVIDIA NIM Embeddings & ChromaDB    :done, 2026-09-22, 2026-09-25
     Query Augmenter (Rewrite/HyDE)      :done, 2026-09-24, 2026-09-26
     Study Generator (NVIDIA + Nebius)   :done, 2026-09-25, 2026-09-27
+    Semantic Reranker (StudyReranker)   :done, 2026-09-26, 2026-09-27
     section Upcoming Roadmap
-    Two-Stage Re-ranking (NVIDIA NeMo)  :active, 2026-09-28, 2026-10-02
+    Unified Assistant Orchestrator & CLI:active, 2026-09-28, 2026-09-30
     Multimodal Slide & Diagram Parser   :2026-10-01, 2026-10-06
     Interactive UI & Synchronized PDF   :2026-10-05, 2026-10-10
     Active Recall & Quiz Engine         :2026-10-09, 2026-10-14
     Academic Ragas Benchmarking         :2026-10-13, 2026-10-18
 ```
 
-### 1. Two-Stage Retrieval with NVIDIA NIM Reranker
-- **Goal:** In complex academic courses, vector distance alone can retrieve topically adjacent but factually irrelevant text chunks.
-- **Implementation:** Add `NvidiaReranker` using `nvidia/reranking-nemotron-4b`. The retriever will fetch `top_k=25` candidate chunks via dense vector search, and the cross-encoder reranker will score query-chunk pairs down to the `top_5` most informative excerpts.
+### 1. Unified Assistant Orchestrator & CLI Interface (`src/assistant.py`)
+- **Goal:** Provide a seamless, unified entry point that orchestrates Ingestion, Query Augmentation, ChromaDB Retrieval, Reranking, and Generation into a single API call.
+- **Implementation:** Implement `StudyAssistant` with `ask(query, stream=False)` and an interactive command-line interface (`python -m src.assistant --chat`) with real-time typewriter token streaming.
 
 ### 2. Multimodal Lecture Slide & Diagram Ingestion
 - **Goal:** University lecture slides are heavily visual (e.g., circuit diagrams, biological pathways, chemistry reactions, neural network architectures). Text extraction via PDF parsers loses this visual context.
@@ -210,11 +215,12 @@ study-assistant/
 │   ├── retrieval/                   # Search, query expansion & context synthesis
 │   │   ├── __init__.py
 │   │   ├── query_augmenter.py       # Query rewriting, multi-query expansion & HyDE
+│   │   ├── reranker.py              # Semantic cross-encoder & LLM listwise reranker
 │   │   └── retriever.py             # Vector similarity search & context formatting
 │   └── generation/                  # Grounded LLM response generation
 │       ├── __init__.py
 │       └── generator.py             # Dual NVIDIA/Nebius LLM client & citation engine
-├── tests/                           # Complete test suite
+├── tests/                           # Complete test suite (73 passing tests)
 │   ├── conftest.py                  # Pytest fixtures & environment setup
 │   ├── test_chunker.py              # Unit tests for text chunking
 │   ├── test_embedder.py             # Unit tests for NVIDIA embedding client
@@ -223,6 +229,7 @@ study-assistant/
 │   ├── test_loader.py               # Unit tests for document loading
 │   ├── test_pipeline.py             # Integration tests for ingestion pipeline
 │   ├── test_query_augmenter.py      # Unit tests for query augmentation strategies
+│   ├── test_reranker.py             # Unit tests for semantic reranker (20 tests)
 │   └── test_retriever.py            # Unit tests for retrieval & scoring
 ├── .env.example                     # Sample environment variable configuration
 ├── .gitignore                       # Ignored files (virtualenvs, cache, db)
@@ -244,7 +251,7 @@ Clone the repository and install dependencies in a virtual environment:
 
 ```bash
 # Clone the repository
-git clone https://github.com/hamza-jpg/study-assistant.git
+git clone https://github.com/Khazar451/study-assistant.git
 cd study-assistant
 
 # Create and activate a virtual environment
@@ -303,29 +310,34 @@ from src.ingestion.indexer import ChromaIndexer
 from src.ingestion.embedder import NvidiaEmbedder
 from src.retrieval.query_augmenter import QueryAugmenter
 from src.retrieval.retriever import StudyRetriever
+from src.retrieval.reranker import StudyReranker
 from src.generation.generator import StudyGenerator
 
 # 1. Initialize core services
 indexer = ChromaIndexer(persist_directory="./chroma_db")
 embedder = NvidiaEmbedder()
 augmenter = QueryAugmenter()
+reranker = StudyReranker(mode="llm_listwise")
 
 # 2. Setup retriever with query augmentation
 retriever = StudyRetriever(
     indexer=indexer,
     embedder=embedder,
     augmenter=augmenter,
-    top_k=5,
+    top_k=15,
     score_threshold=0.35,
 )
 
-# 3. Retrieve relevant chunks using Multi-Query Expansion
+# 3. Retrieve candidate chunks using Multi-Query Expansion
 query = "What is backpropagation and how does gradient descent update weights?"
-chunks = retriever.retrieve(query, augment=True, augment_mode="expand")
+candidate_chunks = retriever.retrieve(query, augment=True, augment_mode="expand")
 
-# 4. Generate grounded pedagogical answer
+# 4. Rerank candidate chunks with cross-attention relevance scoring
+reranked_chunks = reranker.rerank(query=query, chunks=candidate_chunks, top_n=5)
+
+# 5. Generate grounded pedagogical answer
 generator = StudyGenerator()
-result = generator.generate(query=query, context=chunks)
+result = generator.generate(query=query, context=reranked_chunks)
 
 print("=== TUTOR RESPONSE ===")
 print(result["answer"])
