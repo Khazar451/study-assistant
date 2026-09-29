@@ -8,6 +8,7 @@
 [![Nebius AI Studio](https://img.shields.io/badge/Nebius-AI%20Studio%20Cloud-00F5D4.svg)](https://studio.nebius.ai/)
 [![Global AI Hackathon](https://img.shields.io/badge/Nebius%20x%20NVIDIA-Global%20AI%20Hackathon-76B900.svg?logo=nvidia&logoColor=white)](https://github.com/Khazar451/study-assistant)
 [![Vector DB](https://img.shields.io/badge/ChromaDB-Persistent%20HNSW-FF6B6B.svg)](https://www.trychroma.com/)
+[![Tests: 91 Passing](https://img.shields.io/badge/tests-91%20passing-brightgreen.svg)](tests/)
 [![CI Status](https://github.com/Khazar451/study-assistant/actions/workflows/test.yml/badge.svg)](https://github.com/Khazar451/study-assistant/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -24,14 +25,15 @@
   - [3.1 Ingestion & Indexing Engine](#31-ingestion--indexing-engine)
   - [3.2 Advanced Retrieval & Query Intelligence](#32-advanced-retrieval--query-intelligence)
   - [3.3 Grounded Generation Engine & Guardrails](#33-grounded-generation-engine--guardrails)
-  - [3.4 Automated Testing & CI/CD Pipeline](#34-automated-testing--cicd-pipeline)
+  - [3.4 Unified Assistant Orchestrator & CLI](#34-unified-assistant-orchestrator--cli)
+  - [3.5 Automated Testing & CI/CD Pipeline](#35-automated-testing--cicd-pipeline)
 - [4. Roadmap & Upcoming Implementations](#4-roadmap--upcoming-implementations)
 - [5. Repository Structure](#5-repository-structure)
 - [6. Getting Started & Quickstart](#6-getting-started--quickstart)
   - [6.1 Prerequisites & Installation](#61-prerequisites--installation)
   - [6.2 Environment Configuration](#62-environment-configuration)
-  - [6.3 Running Ingestion via CLI](#63-running-ingestion-via-cli)
-  - [6.4 End-to-End Python Example](#64-end-to-end-python-example)
+  - [6.3 Unified CLI Usage (Chat, Ask & Ingest)](#63-unified-cli-usage-chat-ask--ingest)
+  - [6.4 End-to-End Python API Example](#64-end-to-end-python-api-example)
   - [6.5 Running the Test Suite](#65-running-the-test-suite)
 - [7. Questions for Faculty Advisors & Academic Feedback](#7-questions-for-faculty-advisors--academic-feedback)
 - [8. Hackathon Evaluation Alignment](#8-hackathon-evaluation-alignment)
@@ -62,6 +64,16 @@ The following diagram illustrates the complete dataflow from raw course document
 
 ```mermaid
 flowchart TB
+    subgraph CLIENTS["Client Interfaces"]
+        CLI["Terminal CLI (--chat / --ask / --ingest)"]
+        API["Python Library (from src import StudyAssistant)"]
+        WEB["Streamlit Web UI (Milestone 6)"]
+    end
+
+    subgraph ORCHESTRATOR["Unified Facade: StudyAssistant (src/assistant.py)"]
+        FACADE["StudyAssistant Orchestrator"]
+    end
+
     subgraph INGESTION["Phase 1: Ingestion & Indexing Engine"]
         A[Lecture PDFs / Slides / Markdown / TXT] --> B[DocumentLoader<br/>pypdf & metadata extractor]
         B --> C[DocumentChunker<br/>RecursiveCharacterTextSplitter]
@@ -78,18 +90,25 @@ flowchart TB
         I --> J[ChromaDB Nearest Neighbor Search]
         J --> K[Max-Score Pooling & Deduplication]
         K --> L[Cosine Similarity Threshold Filter]
-        L --> RR[StudyReranker<br/>Cross-Encoder / LLM Listwise Scoring<br/>meta/llama-3.2-11b-vision-instruct]
+        L --> RR[StudyReranker<br/>LLM Listwise Scoring / Ranking NIM<br/>meta/llama-3.2-11b-vision-instruct]
     end
 
     subgraph GENERATION["Phase 3: Grounded Pedagogical Generation"]
         RR --> M[Structured Context Formatter<br/>with Page Metadata]
         M --> N[StudyGenerator Engine]
         N -.->|Primary Provider| O1[NVIDIA NIM Cloud API]
-        N -.->|Fallback Provider| O2[Nebius AI Studio Studio API]
+        N -.->|Fallback Provider| O2[Nebius AI Studio API]
         O1 & O2 --> P[Strict Anti-Hallucination Guardrails]
         P --> Q[Final Grounded Answer<br/>+ Verified Inline Citations<br/>+ Streaming Tokens]
     end
 
+    CLI --> FACADE
+    API --> FACADE
+    WEB --> FACADE
+
+    FACADE -->|"ingest(path)"| INGESTION
+    FACADE -->|"search(query)"| QUERY
+    FACADE -->|"ask(query)"| GENERATION
     E -.-> J
 ```
 
@@ -132,9 +151,22 @@ The generation layer ensures student answers are pedagogical, structured, and st
 | **Inline Citation Extraction** | Formats answers with `[Source: <filename>, Page: <page>]` markers and validates cited files against the retrieved context using regex parsing. |
 | **Streaming Output** | Implements `generate_stream()` returning a token iterator for real-time typewriter animations in frontend interfaces. |
 
-### 3.4 Automated Testing & CI/CD Pipeline (`tests/` & `.github/`)
+### 3.4 Unified Assistant Orchestrator & CLI (`src/assistant.py`)
 
-- **9 Comprehensive Unit Test Suites (73 Tests Passing in ~1.08s):**
+The `StudyAssistant` facade coordinates all subsystems into a unified, high-level developer and CLI interface:
+
+| Method / Feature | Implementation Details |
+| :--- | :--- |
+| `ingest(path)` | Accepts a single document (`.pdf`, `.txt`, `.md`) or an entire course directory. Automatically routes to `IngestionPipeline` and returns ingestion summaries. |
+| `search(query)` | Executes query augmentation, dense vector retrieval, and semantic reranking without calling the LLM generator. Useful for fast source inspection and relevance audits. |
+| `ask(query, stream=False)` | Runs the full pipeline: input guards $ightarrow$ DB empty check $ightarrow$ retrieval $ightarrow$ reranker $ightarrow$ context formatting $ightarrow$ grounded generation with page-level citations. Supports real-time token streaming. |
+| `count()` & `clear()` | Provides collection introspection and safe reset capabilities. |
+| **Interactive Terminal Chat (`--chat`)** | Full interactive study session with typewriter token streaming, `/count` status inspection, and graceful termination. |
+| **CLI Command Flags** | Supports `--ask "..."`, `--ingest "..."`, `--top-k`, `--top-n`, `--mode`, `--no-augment`, and `--db-path`. |
+
+### 3.5 Automated Testing & CI/CD Pipeline (`tests/` & `.github/`)
+
+- **10 Comprehensive Unit Test Suites (91 Tests Passing in ~1.36s):**
   - `tests/test_loader.py`: Validates PDF page extraction, text reading, and unsupported format rejections (5 tests).
   - `tests/test_chunker.py`: Tests boundary preservation, overlap logic, and empty input handling (5 tests).
   - `tests/test_embedder.py`: Validates API payload construction, input typing (`passage` vs `query`), and batching (6 tests).
@@ -144,8 +176,9 @@ The generation layer ensures student answers are pedagogical, structured, and st
   - `tests/test_retriever.py`: Tests similarity scoring, threshold filtering, and multi-query pooling (9 tests).
   - `tests/test_reranker.py`: Validates semantic reranking, sigmoid normalization, monotonic negative imputation, index mapping, and fallback paths (20 tests).
   - `tests/test_generator.py`: Verifies provider switching (NVIDIA vs Nebius), citations, and streaming token yields (10 tests).
+  - `tests/test_assistant.py`: Tests `StudyAssistant` facade initialization, dependency injection, ingestion delegation, streaming/non-streaming ask, empty query & DB guards, search, count/clear, and CLI command execution including interactive chat (18 tests).
 - **Continuous Integration (CI):**
-  - Configured via `.github/workflows/test.yml` running Pytest automatically on push and pull request against Python 3.11. All 73 tests run green on GitHub Actions without consuming live API credits.
+  - Configured via `.github/workflows/test.yml` running Pytest automatically on push and pull request against Python 3.11. All 91 tests run green on GitHub Actions without consuming live API credits.
 
 ---
 
@@ -163,17 +196,18 @@ gantt
     Query Augmenter (Rewrite/HyDE)      :done, 2026-09-24, 2026-09-26
     Study Generator (NVIDIA + Nebius)   :done, 2026-09-25, 2026-09-27
     Semantic Reranker (StudyReranker)   :done, 2026-09-26, 2026-09-27
+    Unified Assistant Orchestrator & CLI:done, 2026-09-28, 2026-09-29
     section Upcoming Roadmap
-    Unified Assistant Orchestrator & CLI:active, 2026-09-28, 2026-09-30
-    Multimodal Slide & Diagram Parser   :2026-10-01, 2026-10-06
-    Interactive UI & Synchronized PDF   :2026-10-05, 2026-10-10
-    Active Recall & Quiz Engine         :2026-10-09, 2026-10-14
-    Academic Ragas Benchmarking         :2026-10-13, 2026-10-18
+    Interactive Streamlit Web UI        :active, 2026-09-29, 2026-10-03
+    Multimodal Slide & Diagram Parser   :2026-10-04, 2026-10-08
+    Synchronized PDF Viewer             :2026-10-08, 2026-10-12
+    Active Recall & Quiz Engine         :2026-10-11, 2026-10-15
+    Academic Ragas Benchmarking         :2026-10-14, 2026-10-18
 ```
 
-### 1. Unified Assistant Orchestrator & CLI Interface (`src/assistant.py`)
-- **Goal:** Provide a seamless, unified entry point that orchestrates Ingestion, Query Augmentation, ChromaDB Retrieval, Reranking, and Generation into a single API call.
-- **Implementation:** Implement `StudyAssistant` with `ask(query, stream=False)` and an interactive command-line interface (`python -m src.assistant --chat`) with real-time typewriter token streaming.
+### 1. Interactive Streamlit Web UI (`app.py`)
+- **Goal:** Provide an intuitive browser-based interface for students and educators with document drag-and-drop ingestion, interactive conversation threads, and collapsible source citations.
+- **Implementation:** Built using Streamlit, connecting directly to `StudyAssistant` with real-time token streaming (`st.write_stream`) and indexed document management.
 
 ### 2. Multimodal Lecture Slide & Diagram Ingestion
 - **Goal:** University lecture slides are heavily visual (e.g., circuit diagrams, biological pathways, chemistry reactions, neural network architectures). Text extraction via PDF parsers loses this visual context.
@@ -204,7 +238,8 @@ study-assistant/
 │   └── workflows/
 │       └── test.yml                 # GitHub Actions automated CI testing workflow
 ├── src/
-│   ├── __init__.py
+│   ├── __init__.py                  # Top-level package exports (StudyAssistant facade)
+│   ├── assistant.py                 # Unified Assistant Orchestrator & CLI (--chat / --ask)
 │   ├── ingestion/                   # Document processing, chunking & vectorization
 │   │   ├── __init__.py
 │   │   ├── chunker.py               # Recursive text chunking with overlap
@@ -220,17 +255,18 @@ study-assistant/
 │   └── generation/                  # Grounded LLM response generation
 │       ├── __init__.py
 │       └── generator.py             # Dual NVIDIA/Nebius LLM client & citation engine
-├── tests/                           # Complete test suite (73 passing tests)
+├── tests/                           # Complete test suite (91 passing tests)
 │   ├── conftest.py                  # Pytest fixtures & environment setup
-│   ├── test_chunker.py              # Unit tests for text chunking
-│   ├── test_embedder.py             # Unit tests for NVIDIA embedding client
-│   ├── test_generator.py            # Unit tests for LLM generation & fallback logic
-│   ├── test_indexer.py              # Unit tests for ChromaDB storage & queries
-│   ├── test_loader.py               # Unit tests for document loading
-│   ├── test_pipeline.py             # Integration tests for ingestion pipeline
-│   ├── test_query_augmenter.py      # Unit tests for query augmentation strategies
+│   ├── test_assistant.py            # Unit tests for Orchestrator & CLI (18 tests)
+│   ├── test_chunker.py              # Unit tests for text chunking (5 tests)
+│   ├── test_embedder.py             # Unit tests for NVIDIA embedding client (6 tests)
+│   ├── test_generator.py            # Unit tests for LLM generation & fallback logic (10 tests)
+│   ├── test_indexer.py              # Unit tests for ChromaDB storage & queries (4 tests)
+│   ├── test_loader.py               # Unit tests for document loading (5 tests)
+│   ├── test_pipeline.py             # Integration tests for ingestion pipeline (3 tests)
+│   ├── test_query_augmenter.py      # Unit tests for query augmentation strategies (11 tests)
 │   ├── test_reranker.py             # Unit tests for semantic reranker (20 tests)
-│   └── test_retriever.py            # Unit tests for retrieval & scoring
+│   └── test_retriever.py            # Unit tests for retrieval & scoring (9 tests)
 ├── .env.example                     # Sample environment variable configuration
 ├── .gitignore                       # Ignored files (virtualenvs, cache, db)
 ├── LICENSE                          # MIT License
@@ -289,60 +325,50 @@ NEBIUS_API_KEY=your-nebius-key-here
 NEBIUS_BASE_URL=https://api.studio.nebius.ai/v1
 ```
 
-### 6.3 Running Ingestion via CLI
+### 6.3 Unified CLI Usage (Chat, Ask & Ingest)
 
-Ingest an individual lecture note file or an entire directory of course materials:
+The assistant provides a unified command-line interface for interactive chatting, single-shot queries, and document ingestion:
 
 ```bash
-# Ingest a single PDF file
-python -m src.ingestion.pipeline --file "path/to/lecture1.pdf"
+# 1. Launch interactive study session with real-time typewriter token streaming:
+python -m src.assistant --chat
 
-# Ingest an entire course folder recursively with custom batch size
-python -m src.ingestion.pipeline --dir "path/to/course_materials/" --batch-size 32
+# 2. Ask a single question directly with verified citations:
+python -m src.assistant --ask "What is Kepler's first law of planetary motion?"
+
+# 3. Ingest lecture notes, slides, or course materials:
+python -m src.assistant --ingest "sample_materials/astronomy_kepler.txt"
+
+# 4. Ingest an entire course directory:
+python -m src.assistant --ingest "path/to/course_materials/"
 ```
 
-### 6.4 End-to-End Python Example
+### 6.4 End-to-End Python API Example
 
-Here is how the complete system is instantiated and queried programmatically:
+Use the top-level `StudyAssistant` facade for clean programmatic access in your applications:
 
 ```python
-from src.ingestion.indexer import ChromaIndexer
-from src.ingestion.embedder import NvidiaEmbedder
-from src.retrieval.query_augmenter import QueryAugmenter
-from src.retrieval.retriever import StudyRetriever
-from src.retrieval.reranker import StudyReranker
-from src.generation.generator import StudyGenerator
+from src import StudyAssistant
 
-# 1. Initialize core services
-indexer = ChromaIndexer(persist_directory="./chroma_db")
-embedder = NvidiaEmbedder()
-augmenter = QueryAugmenter()
-reranker = StudyReranker(mode="llm_listwise")
+# 1. Initialize the unified assistant (lazily coordinates all subcomponents)
+assistant = StudyAssistant(persist_directory="./chroma_db")
 
-# 2. Setup retriever with query augmentation
-retriever = StudyRetriever(
-    indexer=indexer,
-    embedder=embedder,
-    augmenter=augmenter,
+# 2. Ingest course documents (single file or full folder)
+assistant.ingest("sample_materials/astronomy_kepler.txt")
+
+# 3. Ask questions with grounded answers and verified page citations
+response = assistant.ask(
+    query="How do planets orbit the sun according to Kepler?",
     top_k=15,
-    score_threshold=0.35,
+    top_n=5,
+    stream=False,
 )
 
-# 3. Retrieve candidate chunks using Multi-Query Expansion
-query = "What is backpropagation and how does gradient descent update weights?"
-candidate_chunks = retriever.retrieve(query, augment=True, augment_mode="expand")
+print("=== TUTOR ANSWER ===")
+print(response["answer"])
 
-# 4. Rerank candidate chunks with cross-attention relevance scoring
-reranked_chunks = reranker.rerank(query=query, chunks=candidate_chunks, top_n=5)
-
-# 5. Generate grounded pedagogical answer
-generator = StudyGenerator()
-result = generator.generate(query=query, context=reranked_chunks)
-
-print("=== TUTOR RESPONSE ===")
-print(result["answer"])
-print("\n=== CITED SOURCES ===")
-print(result["sources"])
+print("\n=== AUDITABLE SOURCES ===")
+print(response["sources"])
 ```
 
 ### 6.5 Running the Test Suite
@@ -376,7 +402,7 @@ This project is built to satisfy the core evaluation criteria of the **Nebius x 
 | :--- | :--- |
 | **NVIDIA Technology Utilization** | • NVIDIA NIM `nvidia/llama-nemotron-embed-vl-1b-v2` for state-of-the-art embedding retrieval.<br/>• NVIDIA NIM `meta/llama-3.2-11b-vision-instruct` for query enhancement and grounded reasoning.<br/>• Prepared integration for NVIDIA NeMo Reranker (`nvidia/reranking-nemotron-4b`). |
 | **Nebius AI Studio Integration** | • Seamless resilient dual-provider fallback architecture leveraging Nebius Token Factory.<br/>• High-throughput inference for large-scale document synthesis (`nvidia/Llama-3.1-Nemotron-70B-Instruct-HF`). |
-| **Technical Depth & Engineering Rigor** | • Complete separation of concerns (ETL, Vector Indexing, Query Augmentation, Generation).<br/>• Idempotent chunking with SHA-256 deterministic IDs, eliminating ghost chunks.<br/>• 8 automated test suites with GitHub Actions CI pipeline. |
+| **Technical Depth & Engineering Rigor** | • Complete separation of concerns (ETL, Vector Indexing, Query Augmentation, Generation).<br/>• Idempotent chunking with SHA-256 deterministic IDs, eliminating ghost chunks.<br/>• 10 automated test suites (91 passing tests) with GitHub Actions CI pipeline. |
 | **Real-World Impact & Feasibility** | • Solves a tangible, daily problem for thousands of university students and faculty.<br/>• Strict zero-hallucination guardrails and auditable page-level citations. |
 
 ---

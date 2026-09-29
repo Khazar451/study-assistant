@@ -1,0 +1,14 @@
+# Introduction to Kepler's Laws of Planetary Motion
+
+Johannes Kepler published his first two laws in 1609 in Astronomia Nova, and his third law in 1619 in Harmonices Mundi.
+
+## Kepler's First Law (The Law of Ellipses)
+All planets orbit the Sun in elliptical orbits, with the Sun situated at one of the two focal points (foci). An ellipse is characterized by its semi-major axis (a) and its eccentricity (e). When eccentricity equals zero, the ellipse is a circle.
+
+## Kepler's Second Law (The Law of Equal Areas)
+A line segment joining a planet and the Sun sweeps out equal areas during equal intervals of time. This means that a planet moves faster when it is near the Sun (at perihelion) and slower when it is farthest from the Sun (at aphelion).
+
+## Kepler's Third Law (The Law of Harmonies)
+The square of the orbital period (P) of a planet is directly proportional to the cube of the semi-major axis (a) of its orbit. Expressed mathematically:
+P^2 = a^3
+where P is measured in Earth years and a is measured in astronomical units (AU). This relationship demonstrates that planets further from the Sun have significantly longer orbital periods.
