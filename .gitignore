@@ -22,3 +22,15 @@ chroma_db/
 # Antigravity agent & local config
 .agent/
 .gemini/
+
+# Frontend build & dependencies
+node_modules/
+**/node_modules/
+.next/
+**/.next/
+frontend/.next/
+frontend/node_modules/
+
+# Local user data & uploads
+data/
+

@@ -8,7 +8,7 @@
 [![Nebius AI Studio](https://img.shields.io/badge/Nebius-AI%20Studio%20Cloud-00F5D4.svg)](https://studio.nebius.ai/)
 [![Global AI Hackathon](https://img.shields.io/badge/Nebius%20x%20NVIDIA-Global%20AI%20Hackathon-76B900.svg?logo=nvidia&logoColor=white)](https://github.com/Khazar451/study-assistant)
 [![Vector DB](https://img.shields.io/badge/ChromaDB-Persistent%20HNSW-FF6B6B.svg)](https://www.trychroma.com/)
-[![Tests: 109 Passing](https://img.shields.io/badge/tests-109%20passing-brightgreen.svg)](tests/)
+[![Tests: 119 Passing](https://img.shields.io/badge/tests-119%20passing-brightgreen.svg)](tests/)
 [![CI Status](https://github.com/Khazar451/study-assistant/actions/workflows/test.yml/badge.svg)](https://github.com/Khazar451/study-assistant/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -27,7 +27,8 @@
   - [3.3 Grounded Generation Engine & Guardrails](#33-grounded-generation-engine--guardrails)
   - [3.4 Unified Assistant Orchestrator & CLI](#34-unified-assistant-orchestrator--cli)
   - [3.5 Automated Testing & CI/CD Pipeline](#35-automated-testing--cicd-pipeline)
-  - [3.6 Quantitative Academic Evaluation & Benchmark Suite](#36-quantitative-academic-evaluation--benchmark-suite)
+  - [3.6 Modern Web Application & REST API Layer](#36-modern-web-application--rest-api-layer)
+  - [3.7 Quantitative Academic Evaluation & Benchmark Suite](#37-quantitative-academic-evaluation--benchmark-suite)
 - [4. Roadmap & Upcoming Implementations](#4-roadmap--upcoming-implementations)
 - [5. Repository Structure](#5-repository-structure)
 - [6. Getting Started & Quickstart](#6-getting-started--quickstart)
@@ -185,10 +186,22 @@ ightarrow$ grounded generation with page-level citations. Supports real-time tok
   - `tests/test_generator.py`: Verifies provider switching (NVIDIA vs Nebius), citations, and streaming token yields (10 tests).
   - `tests/test_assistant.py`: Tests `StudyAssistant` facade initialization, dependency injection, ingestion delegation, streaming/non-streaming ask, empty query & DB guards, search, count/clear, and CLI command execution including interactive chat (18 tests).
   - `tests/test_evaluation.py`: Validates precision, recall, MRR, source filtering, faithfulness scoring, edge cases, dataset integrity, and report export (18 tests).
+  - `tests/test_api.py`: Validates FastAPI status, document inspection, file/sample ingestion, ask, SSE streaming, search, and flashcard generation (10 tests).
 - **Continuous Integration (CI):**
-  - Configured via `.github/workflows/test.yml` running Pytest automatically on push and pull request against Python 3.11. All 109 tests run green on GitHub Actions without consuming live API credits.
+  - Configured via `.github/workflows/test.yml` running Pytest automatically on push and pull request against Python 3.11. All 119 tests run green on GitHub Actions without consuming live API credits.
 
-### 3.6 Quantitative Academic Evaluation & Benchmark Suite (`evaluation/`)
+### 3.6 Modern Web Application & REST API Layer (`frontend/` & `src/api/`)
+
+Following modern 2026 frontend vibe coding best practices, the application features an enterprise-grade full-stack interface:
+
+| Component | Technology | Responsibility |
+| :--- | :--- | :--- |
+| **Frontend Framework** | **Next.js 16 (App Router, React 19, TypeScript)** | High-prior agent architecture, responsive split-screen layouts, instant hot reloading via Turbopack. |
+| **Design System** | **Vanilla CSS (Linear/Vercel Aesthetic)** | Minimalist, zero-emoji typography, dark mode (`#0b0f17`) and light mode (`#f8fafc`) with dynamic CSS theme toggle. |
+| **REST & SSE Backend** | **FastAPI + Uvicorn (`src/api/server.py`)** | Asynchronous typed endpoints with Server-Sent Events (`/api/ask/stream`) for typewriter token streaming and resilient offline fallback. |
+| **Academic Modules** | **3 Focused Views** | **Academic Tutor** (grounded citations & Deep Search), **Course Materials** (PDF/MD/TXT drag-and-drop & sample loader), and **Study Flashcards** (active recall with 3D flip card self-testing). |
+
+### 3.7 Quantitative Academic Evaluation & Benchmark Suite (`evaluation/`)
 
 To empirically prove that our architectural innovations yield measurable improvements over naive vector search, we built an automated evaluation framework comparing **Naive Baseline RAG**, **Query Augmented RAG**, and **Our Full Advanced Pipeline**:
 
@@ -274,9 +287,19 @@ study-assistant/
 │   ├── dataset.py                   # Curated benchmark items (formal & colloquial queries)
 │   ├── metrics.py                   # Deterministic Precision@K, Recall@K, MRR & Faithfulness
 │   └── report_generator.py          # Markdown & JSON benchmark reporting engine
+├── frontend/                        # Next.js 16 App Router Web Application
+│   ├── app/
+│   │   ├── globals.css              # Minimalist Vanilla CSS theme (Dark/Light modes)
+│   │   ├── layout.tsx               # Root layout & metadata
+│   │   └── page.tsx                 # Academic Tutor, Materials & Study Flashcards
+│   ├── next.config.ts               # API rewrite proxy to FastAPI (port 8000)
+│   └── package.json                 # React 19 & Next.js dependencies
 ├── src/
 │   ├── __init__.py                  # Top-level package exports (StudyAssistant facade)
 │   ├── assistant.py                 # Unified Assistant Orchestrator & CLI (--chat / --ask)
+│   ├── api/                         # FastAPI REST & SSE Streaming Server
+│   │   ├── __init__.py
+│   │   └── server.py                # Typed endpoints (/api/ask/stream, /api/documents)
 │   ├── ingestion/                   # Document processing, chunking & vectorization
 │   │   ├── __init__.py
 │   │   ├── chunker.py               # Recursive text chunking with overlap
@@ -292,8 +315,9 @@ study-assistant/
 │   └── generation/                  # Grounded LLM response generation
 │       ├── __init__.py
 │       └── generator.py             # Dual NVIDIA/Nebius LLM client & citation engine
-├── tests/                           # Complete test suite (109 passing tests)
+├── tests/                           # Complete test suite (119 passing tests)
 │   ├── conftest.py                  # Pytest fixtures & environment setup
+│   ├── test_api.py                  # FastAPI REST endpoints & SSE streaming (10 tests)
 │   ├── test_assistant.py            # Unit tests for Orchestrator & CLI (18 tests)
 │   ├── test_chunker.py              # Unit tests for text chunking (5 tests)
 │   ├── test_embedder.py             # Unit tests for NVIDIA embedding client (6 tests)
@@ -305,8 +329,9 @@ study-assistant/
 │   ├── test_query_augmenter.py      # Unit tests for query augmentation strategies (11 tests)
 │   ├── test_reranker.py             # Unit tests for semantic reranker (20 tests)
 │   └── test_retriever.py            # Unit tests for retrieval & scoring (9 tests)
+├── sample_materials/                # Curated lecture notes & Kepler sample
 ├── .env.example                     # Sample environment variable configuration
-├── .gitignore                       # Ignored files (virtualenvs, cache, db)
+├── .gitignore                       # Ignored files (virtualenvs, cache, db, node_modules)
 ├── LICENSE                          # MIT License
 ├── requirements.txt                 # Pinned dependencies
 └── README.md                        # Project documentation & academic report
@@ -409,12 +434,27 @@ print("\n=== AUDITABLE SOURCES ===")
 print(response["sources"])
 ```
 
-### 6.5 Running the Test Suite
+### 6.5 Running the Modern Web Application (Next.js + FastAPI)
 
-Execute the full suite of unit and integration tests:
+Designed according to 2026 frontend vibe coding best practices with **Next.js App Router**, **TypeScript**, **Vanilla CSS design system**, and **FastAPI**:
 
 ```bash
-pytest tests/ -v
+# 1. Start the FastAPI RAG backend (Port 8000)
+python -m uvicorn src.api.server:app --port 8000 --reload
+
+# 2. In a separate terminal, launch the Next.js study frontend (Port 3000)
+cd frontend
+npm run dev
+
+# 3. Access in browser: http://localhost:3000
+```
+
+### 6.6 Running the Test Suite
+
+Execute the full suite of unit and integration tests (101 tests passing):
+
+```bash
+python -m pytest tests/ -v
 ```
 
 ### 6.6 Running Academic Benchmarks
@@ -452,7 +492,7 @@ This project is built to satisfy the core evaluation criteria of the **Nebius x 
 | :--- | :--- |
 | **NVIDIA Technology Utilization** | • NVIDIA NIM `nvidia/llama-nemotron-embed-vl-1b-v2` for state-of-the-art embedding retrieval.<br/>• NVIDIA NIM `meta/llama-3.2-11b-vision-instruct` for query enhancement and grounded reasoning.<br/>• Prepared integration for NVIDIA NeMo Reranker (`nvidia/reranking-nemotron-4b`). |
 | **Nebius AI Studio Integration** | • Seamless resilient dual-provider fallback architecture leveraging Nebius Token Factory.<br/>• High-throughput inference for large-scale document synthesis (`nvidia/Llama-3.1-Nemotron-70B-Instruct-HF`). |
-| **Technical Depth & Engineering Rigor** | • Complete separation of concerns (ETL, Vector Indexing, Query Augmentation, Generation).<br/>• Idempotent chunking with SHA-256 deterministic IDs, eliminating ghost chunks.<br/>• 11 automated test suites (109 passing tests) with GitHub Actions CI pipeline and quantitative empirical benchmark suite. |
+| **Technical Depth & Engineering Rigor** | • Complete separation of concerns (ETL, Vector Indexing, Query Augmentation, Generation).<br/>• Idempotent chunking with SHA-256 deterministic IDs, eliminating ghost chunks.<br/>• 12 automated test suites (119 passing tests) with GitHub Actions CI pipeline and quantitative empirical benchmark suite. |
 | **Real-World Impact & Feasibility** | • Solves a tangible, daily problem for thousands of university students and faculty.<br/>• Strict zero-hallucination guardrails and auditable page-level citations. |
 
 ---
