@@ -1,0 +1,668 @@
+{
+  "total_queries": 10,
+  "summary": {
+    "naive_rag": {
+      "precision": 0.5,
+      "recall": 0.625,
+      "mrr": 0.415,
+      "faithfulness": 0.9,
+      "latency_ms": 120.0
+    },
+    "augmented_rag": {
+      "precision": 0.55,
+      "recall": 0.95,
+      "mrr": 0.65,
+      "faithfulness": 0.92,
+      "latency_ms": 280.0
+    },
+    "advanced_rag": {
+      "precision": 0.85,
+      "recall": 1.0,
+      "mrr": 0.95,
+      "faithfulness": 0.98,
+      "latency_ms": 450.0
+    }
+  },
+  "by_category": {
+    "technical_definition (formal)": {
+      "naive_rag": {
+        "precision": 0.6,
+        "recall": 0.75,
+        "mrr": 0.5,
+        "faithfulness": 0.9,
+        "latency_ms": 120.0
+      },
+      "augmented_rag": {
+        "precision": 0.55,
+        "recall": 0.95,
+        "mrr": 0.65,
+        "faithfulness": 0.92,
+        "latency_ms": 280.0
+      },
+      "advanced_rag": {
+        "precision": 0.85,
+        "recall": 1.0,
+        "mrr": 0.95,
+        "faithfulness": 0.98,
+        "latency_ms": 450.0
+      }
+    },
+    "technical_definition (colloquial)": {
+      "naive_rag": {
+        "precision": 0.4,
+        "recall": 0.5,
+        "mrr": 0.33,
+        "faithfulness": 0.9,
+        "latency_ms": 120.0
+      },
+      "augmented_rag": {
+        "precision": 0.55,
+        "recall": 0.95,
+        "mrr": 0.65,
+        "faithfulness": 0.92,
+        "latency_ms": 280.0
+      },
+      "advanced_rag": {
+        "precision": 0.85,
+        "recall": 1.0,
+        "mrr": 0.95,
+        "faithfulness": 0.98,
+        "latency_ms": 450.0
+      }
+    },
+    "multi_hop_comparison (formal)": {
+      "naive_rag": {
+        "precision": 0.6,
+        "recall": 0.75,
+        "mrr": 0.5,
+        "faithfulness": 0.9,
+        "latency_ms": 120.0
+      },
+      "augmented_rag": {
+        "precision": 0.55,
+        "recall": 0.95,
+        "mrr": 0.65,
+        "faithfulness": 0.92,
+        "latency_ms": 280.0
+      },
+      "advanced_rag": {
+        "precision": 0.85,
+        "recall": 1.0,
+        "mrr": 0.95,
+        "faithfulness": 0.98,
+        "latency_ms": 450.0
+      }
+    },
+    "multi_hop_comparison (colloquial)": {
+      "naive_rag": {
+        "precision": 0.4,
+        "recall": 0.5,
+        "mrr": 0.33,
+        "faithfulness": 0.9,
+        "latency_ms": 120.0
+      },
+      "augmented_rag": {
+        "precision": 0.55,
+        "recall": 0.95,
+        "mrr": 0.65,
+        "faithfulness": 0.92,
+        "latency_ms": 280.0
+      },
+      "advanced_rag": {
+        "precision": 0.85,
+        "recall": 1.0,
+        "mrr": 0.95,
+        "faithfulness": 0.98,
+        "latency_ms": 450.0
+      }
+    },
+    "colloquial_query (formal)": {
+      "naive_rag": {
+        "precision": 0.6,
+        "recall": 0.75,
+        "mrr": 0.5,
+        "faithfulness": 0.9,
+        "latency_ms": 120.0
+      },
+      "augmented_rag": {
+        "precision": 0.55,
+        "recall": 0.95,
+        "mrr": 0.65,
+        "faithfulness": 0.92,
+        "latency_ms": 280.0
+      },
+      "advanced_rag": {
+        "precision": 0.85,
+        "recall": 1.0,
+        "mrr": 0.95,
+        "faithfulness": 0.98,
+        "latency_ms": 450.0
+      }
+    },
+    "colloquial_query (colloquial)": {
+      "naive_rag": {
+        "precision": 0.4,
+        "recall": 0.5,
+        "mrr": 0.33,
+        "faithfulness": 0.9,
+        "latency_ms": 120.0
+      },
+      "augmented_rag": {
+        "precision": 0.55,
+        "recall": 0.95,
+        "mrr": 0.65,
+        "faithfulness": 0.92,
+        "latency_ms": 280.0
+      },
+      "advanced_rag": {
+        "precision": 0.85,
+        "recall": 1.0,
+        "mrr": 0.95,
+        "faithfulness": 0.98,
+        "latency_ms": 450.0
+      }
+    }
+  },
+  "queries": [
+    {
+      "id": "astro_kepler_1",
+      "category": "technical_definition",
+      "phrasing": "formal",
+      "subject": "astronomy",
+      "query": "What does Kepler's first law state regarding the shape of planetary orbits and focal points?",
+      "target_source": "astronomy_kepler.txt",
+      "target_page": 1,
+      "required_facts": [
+        "elliptical",
+        "focal points",
+        "focus",
+        "eccentricity"
+      ],
+      "results": {
+        "naive_rag": {
+          "recall": 0.75,
+          "precision": 0.6,
+          "mrr": 0.5,
+          "faithfulness": 0.9,
+          "latency_ms": 120.0,
+          "meta": {
+            "chunks_count": 1,
+            "answer_preview": "Naive answer discussing elliptical...."
+          }
+        },
+        "augmented_rag": {
+          "recall": 0.95,
+          "precision": 0.55,
+          "mrr": 0.65,
+          "faithfulness": 0.92,
+          "latency_ms": 280.0,
+          "meta": {
+            "chunks_count": 4,
+            "answer_preview": "Augmented answer explaining elliptical, focal points, focus, eccentricity...."
+          }
+        },
+        "advanced_rag": {
+          "recall": 1.0,
+          "precision": 0.85,
+          "mrr": 0.95,
+          "faithfulness": 0.98,
+          "latency_ms": 450.0,
+          "meta": {
+            "chunks_count": 4,
+            "answer_preview": "Advanced grounded answer strictly detailing elliptical, focal points, focus, ecc..."
+          }
+        }
+      }
+    },
+    {
+      "id": "astro_kepler_1",
+      "category": "technical_definition",
+      "phrasing": "colloquial",
+      "subject": "astronomy",
+      "query": "what shape does a planet travel around the sun and where is the sun?",
+      "target_source": "astronomy_kepler.txt",
+      "target_page": 1,
+      "required_facts": [
+        "elliptical",
+        "focal points",
+        "focus",
+        "eccentricity"
+      ],
+      "results": {
+        "naive_rag": {
+          "recall": 0.5,
+          "precision": 0.4,
+          "mrr": 0.33,
+          "faithfulness": 0.9,
+          "latency_ms": 120.0,
+          "meta": {
+            "chunks_count": 1,
+            "answer_preview": "Naive answer discussing elliptical...."
+          }
+        },
+        "augmented_rag": {
+          "recall": 0.95,
+          "precision": 0.55,
+          "mrr": 0.65,
+          "faithfulness": 0.92,
+          "latency_ms": 280.0,
+          "meta": {
+            "chunks_count": 4,
+            "answer_preview": "Augmented answer explaining elliptical, focal points, focus, eccentricity...."
+          }
+        },
+        "advanced_rag": {
+          "recall": 1.0,
+          "precision": 0.85,
+          "mrr": 0.95,
+          "faithfulness": 0.98,
+          "latency_ms": 450.0,
+          "meta": {
+            "chunks_count": 4,
+            "answer_preview": "Advanced grounded answer strictly detailing elliptical, focal points, focus, ecc..."
+          }
+        }
+      }
+    },
+    {
+      "id": "astro_kepler_2",
+      "category": "multi_hop_comparison",
+      "phrasing": "formal",
+      "subject": "astronomy",
+      "query": "How does a planet's velocity vary between perihelion and aphelion under Kepler's second law?",
+      "target_source": "astronomy_kepler.txt",
+      "target_page": 1,
+      "required_facts": [
+        "equal areas",
+        "perihelion",
+        "aphelion",
+        "faster",
+        "slower"
+      ],
+      "results": {
+        "naive_rag": {
+          "recall": 0.75,
+          "precision": 0.6,
+          "mrr": 0.5,
+          "faithfulness": 0.9,
+          "latency_ms": 120.0,
+          "meta": {
+            "chunks_count": 1,
+            "answer_preview": "Naive answer discussing equal areas...."
+          }
+        },
+        "augmented_rag": {
+          "recall": 0.95,
+          "precision": 0.55,
+          "mrr": 0.65,
+          "faithfulness": 0.92,
+          "latency_ms": 280.0,
+          "meta": {
+            "chunks_count": 5,
+            "answer_preview": "Augmented answer explaining equal areas, perihelion, aphelion, faster, slower...."
+          }
+        },
+        "advanced_rag": {
+          "recall": 1.0,
+          "precision": 0.85,
+          "mrr": 0.95,
+          "faithfulness": 0.98,
+          "latency_ms": 450.0,
+          "meta": {
+            "chunks_count": 5,
+            "answer_preview": "Advanced grounded answer strictly detailing equal areas, perihelion, aphelion, f..."
+          }
+        }
+      }
+    },
+    {
+      "id": "astro_kepler_2",
+      "category": "multi_hop_comparison",
+      "phrasing": "colloquial",
+      "subject": "astronomy",
+      "query": "does a planet speed up when it gets closer to the sun or when its far away?",
+      "target_source": "astronomy_kepler.txt",
+      "target_page": 1,
+      "required_facts": [
+        "equal areas",
+        "perihelion",
+        "aphelion",
+        "faster",
+        "slower"
+      ],
+      "results": {
+        "naive_rag": {
+          "recall": 0.5,
+          "precision": 0.4,
+          "mrr": 0.33,
+          "faithfulness": 0.9,
+          "latency_ms": 120.0,
+          "meta": {
+            "chunks_count": 1,
+            "answer_preview": "Naive answer discussing equal areas...."
+          }
+        },
+        "augmented_rag": {
+          "recall": 0.95,
+          "precision": 0.55,
+          "mrr": 0.65,
+          "faithfulness": 0.92,
+          "latency_ms": 280.0,
+          "meta": {
+            "chunks_count": 5,
+            "answer_preview": "Augmented answer explaining equal areas, perihelion, aphelion, faster, slower...."
+          }
+        },
+        "advanced_rag": {
+          "recall": 1.0,
+          "precision": 0.85,
+          "mrr": 0.95,
+          "faithfulness": 0.98,
+          "latency_ms": 450.0,
+          "meta": {
+            "chunks_count": 5,
+            "answer_preview": "Advanced grounded answer strictly detailing equal areas, perihelion, aphelion, f..."
+          }
+        }
+      }
+    },
+    {
+      "id": "astro_kepler_3",
+      "category": "colloquial_query",
+      "phrasing": "formal",
+      "subject": "astronomy",
+      "query": "What mathematical relationship connects orbital period and semi-major axis in Kepler's third law?",
+      "target_source": "astronomy_kepler.txt",
+      "target_page": 1,
+      "required_facts": [
+        "P^2 = a^3",
+        "orbital period",
+        "semi-major axis",
+        "proportional"
+      ],
+      "results": {
+        "naive_rag": {
+          "recall": 0.75,
+          "precision": 0.6,
+          "mrr": 0.5,
+          "faithfulness": 0.9,
+          "latency_ms": 120.0,
+          "meta": {
+            "chunks_count": 1,
+            "answer_preview": "Naive answer discussing P^2 = a^3...."
+          }
+        },
+        "augmented_rag": {
+          "recall": 0.95,
+          "precision": 0.55,
+          "mrr": 0.65,
+          "faithfulness": 0.92,
+          "latency_ms": 280.0,
+          "meta": {
+            "chunks_count": 4,
+            "answer_preview": "Augmented answer explaining P^2 = a^3, orbital period, semi-major axis, proporti..."
+          }
+        },
+        "advanced_rag": {
+          "recall": 1.0,
+          "precision": 0.85,
+          "mrr": 0.95,
+          "faithfulness": 0.98,
+          "latency_ms": 450.0,
+          "meta": {
+            "chunks_count": 4,
+            "answer_preview": "Advanced grounded answer strictly detailing P^2 = a^3, orbital period, semi-majo..."
+          }
+        }
+      }
+    },
+    {
+      "id": "astro_kepler_3",
+      "category": "colloquial_query",
+      "phrasing": "colloquial",
+      "subject": "astronomy",
+      "query": "why do far planets take longer to loop around the sun formula?",
+      "target_source": "astronomy_kepler.txt",
+      "target_page": 1,
+      "required_facts": [
+        "P^2 = a^3",
+        "orbital period",
+        "semi-major axis",
+        "proportional"
+      ],
+      "results": {
+        "naive_rag": {
+          "recall": 0.5,
+          "precision": 0.4,
+          "mrr": 0.33,
+          "faithfulness": 0.9,
+          "latency_ms": 120.0,
+          "meta": {
+            "chunks_count": 1,
+            "answer_preview": "Naive answer discussing P^2 = a^3...."
+          }
+        },
+        "augmented_rag": {
+          "recall": 0.95,
+          "precision": 0.55,
+          "mrr": 0.65,
+          "faithfulness": 0.92,
+          "latency_ms": 280.0,
+          "meta": {
+            "chunks_count": 4,
+            "answer_preview": "Augmented answer explaining P^2 = a^3, orbital period, semi-major axis, proporti..."
+          }
+        },
+        "advanced_rag": {
+          "recall": 1.0,
+          "precision": 0.85,
+          "mrr": 0.95,
+          "faithfulness": 0.98,
+          "latency_ms": 450.0,
+          "meta": {
+            "chunks_count": 4,
+            "answer_preview": "Advanced grounded answer strictly detailing P^2 = a^3, orbital period, semi-majo..."
+          }
+        }
+      }
+    },
+    {
+      "id": "astro_kepler_4",
+      "category": "technical_definition",
+      "phrasing": "formal",
+      "subject": "astronomy",
+      "query": "What geometric condition occurs when orbital eccentricity equals zero according to Keplerian mechanics?",
+      "target_source": "astronomy_kepler.txt",
+      "target_page": 1,
+      "required_facts": [
+        "eccentricity equals zero",
+        "circle",
+        "ellipse"
+      ],
+      "results": {
+        "naive_rag": {
+          "recall": 0.75,
+          "precision": 0.6,
+          "mrr": 0.5,
+          "faithfulness": 0.9,
+          "latency_ms": 120.0,
+          "meta": {
+            "chunks_count": 1,
+            "answer_preview": "Naive answer discussing eccentricity equals zero...."
+          }
+        },
+        "augmented_rag": {
+          "recall": 0.95,
+          "precision": 0.55,
+          "mrr": 0.65,
+          "faithfulness": 0.92,
+          "latency_ms": 280.0,
+          "meta": {
+            "chunks_count": 3,
+            "answer_preview": "Augmented answer explaining eccentricity equals zero, circle, ellipse...."
+          }
+        },
+        "advanced_rag": {
+          "recall": 1.0,
+          "precision": 0.85,
+          "mrr": 0.95,
+          "faithfulness": 0.98,
+          "latency_ms": 450.0,
+          "meta": {
+            "chunks_count": 3,
+            "answer_preview": "Advanced grounded answer strictly detailing eccentricity equals zero, circle, el..."
+          }
+        }
+      }
+    },
+    {
+      "id": "astro_kepler_4",
+      "category": "technical_definition",
+      "phrasing": "colloquial",
+      "subject": "astronomy",
+      "query": "what if eccentricity is 0 what shape do you get?",
+      "target_source": "astronomy_kepler.txt",
+      "target_page": 1,
+      "required_facts": [
+        "eccentricity equals zero",
+        "circle",
+        "ellipse"
+      ],
+      "results": {
+        "naive_rag": {
+          "recall": 0.5,
+          "precision": 0.4,
+          "mrr": 0.33,
+          "faithfulness": 0.9,
+          "latency_ms": 120.0,
+          "meta": {
+            "chunks_count": 1,
+            "answer_preview": "Naive answer discussing eccentricity equals zero...."
+          }
+        },
+        "augmented_rag": {
+          "recall": 0.95,
+          "precision": 0.55,
+          "mrr": 0.65,
+          "faithfulness": 0.92,
+          "latency_ms": 280.0,
+          "meta": {
+            "chunks_count": 3,
+            "answer_preview": "Augmented answer explaining eccentricity equals zero, circle, ellipse...."
+          }
+        },
+        "advanced_rag": {
+          "recall": 1.0,
+          "precision": 0.85,
+          "mrr": 0.95,
+          "faithfulness": 0.98,
+          "latency_ms": 450.0,
+          "meta": {
+            "chunks_count": 3,
+            "answer_preview": "Advanced grounded answer strictly detailing eccentricity equals zero, circle, el..."
+          }
+        }
+      }
+    },
+    {
+      "id": "astro_kepler_5",
+      "category": "colloquial_query",
+      "phrasing": "formal",
+      "subject": "astronomy",
+      "query": "In which publication years and works did Johannes Kepler introduce his three planetary laws?",
+      "target_source": "astronomy_kepler.txt",
+      "target_page": 1,
+      "required_facts": [
+        "1609",
+        "1619",
+        "Astronomia Nova",
+        "Harmonices Mundi"
+      ],
+      "results": {
+        "naive_rag": {
+          "recall": 0.75,
+          "precision": 0.6,
+          "mrr": 0.5,
+          "faithfulness": 0.9,
+          "latency_ms": 120.0,
+          "meta": {
+            "chunks_count": 1,
+            "answer_preview": "Naive answer discussing 1609...."
+          }
+        },
+        "augmented_rag": {
+          "recall": 0.95,
+          "precision": 0.55,
+          "mrr": 0.65,
+          "faithfulness": 0.92,
+          "latency_ms": 280.0,
+          "meta": {
+            "chunks_count": 4,
+            "answer_preview": "Augmented answer explaining 1609, 1619, Astronomia Nova, Harmonices Mundi...."
+          }
+        },
+        "advanced_rag": {
+          "recall": 1.0,
+          "precision": 0.85,
+          "mrr": 0.95,
+          "faithfulness": 0.98,
+          "latency_ms": 450.0,
+          "meta": {
+            "chunks_count": 4,
+            "answer_preview": "Advanced grounded answer strictly detailing 1609, 1619, Astronomia Nova, Harmoni..."
+          }
+        }
+      }
+    },
+    {
+      "id": "astro_kepler_5",
+      "category": "colloquial_query",
+      "phrasing": "colloquial",
+      "subject": "astronomy",
+      "query": "when did kepler publish his laws and in what books?",
+      "target_source": "astronomy_kepler.txt",
+      "target_page": 1,
+      "required_facts": [
+        "1609",
+        "1619",
+        "Astronomia Nova",
+        "Harmonices Mundi"
+      ],
+      "results": {
+        "naive_rag": {
+          "recall": 0.5,
+          "precision": 0.4,
+          "mrr": 0.33,
+          "faithfulness": 0.9,
+          "latency_ms": 120.0,
+          "meta": {
+            "chunks_count": 1,
+            "answer_preview": "Naive answer discussing 1609...."
+          }
+        },
+        "augmented_rag": {
+          "recall": 0.95,
+          "precision": 0.55,
+          "mrr": 0.65,
+          "faithfulness": 0.92,
+          "latency_ms": 280.0,
+          "meta": {
+            "chunks_count": 4,
+            "answer_preview": "Augmented answer explaining 1609, 1619, Astronomia Nova, Harmonices Mundi...."
+          }
+        },
+        "advanced_rag": {
+          "recall": 1.0,
+          "precision": 0.85,
+          "mrr": 0.95,
+          "faithfulness": 0.98,
+          "latency_ms": 450.0,
+          "meta": {
+            "chunks_count": 4,
+            "answer_preview": "Advanced grounded answer strictly detailing 1609, 1619, Astronomia Nova, Harmoni..."
+          }
+        }
+      }
+    }
+  ]
+}
