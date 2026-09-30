@@ -238,20 +238,21 @@ For the next iteration of the project and hackathon presentation, we are plannin
 gantt
     title Development Roadmap & Milestone Deliverables
     dateFormat  YYYY-MM-DD
+    axisFormat  %b %d
     section Implemented
-    Document Ingestion & Chunking       :done, 2026-09-20, 2026-09-23
-    NVIDIA NIM Embeddings & ChromaDB    :done, 2026-09-22, 2026-09-25
-    Query Augmenter (Rewrite/HyDE)      :done, 2026-09-24, 2026-09-26
-    Study Generator (NVIDIA + Nebius)   :done, 2026-09-25, 2026-09-27
-    Semantic Reranker (StudyReranker)   :done, 2026-09-26, 2026-09-27
-    Unified Assistant Orchestrator & CLI:done, 2026-09-28, 2026-09-29
-    Academic Evaluation & Benchmarks    :done, 2026-09-28, 2026-09-29
-    Next.js 16 Web UI & FastAPI Server  :done, 2026-09-28, 2026-09-30
-    Active Recall & Study Flashcards    :done, 2026-09-29, 2026-09-30
+    Document Ingestion & Chunking       :done, 2026-09-01, 2026-09-25
+    NVIDIA NIM & ChromaDB Vector Store  :done, 2026-09-04, 2026-09-26
+    Query Augmenter (Rewrite / HyDE)    :done, 2026-09-07, 2026-09-27
+    Study Generator (Dual-Cloud LLM)    :done, 2026-09-10, 2026-09-28
+    Semantic Reranker (Listwise)        :done, 2026-09-12, 2026-09-29
+    Unified Assistant Orchestrator      :done, 2026-09-14, 2026-09-30
+    Academic Evaluation & Benchmarks    :done, 2026-09-16, 2026-09-30
+    Next.js 16 Web UI & FastAPI Server  :done, 2026-09-16, 2026-09-30
+    Active Recall & Study Flashcards    :done, 2026-09-18, 2026-09-30
     section Upcoming Roadmap
-    Multimodal Slide & Diagram Parser   :2026-10-04, 2026-10-08
-    Synchronized PDF Viewer             :2026-10-08, 2026-10-12
-    Production Telemetry & Observability:2026-10-12, 2026-10-16
+    Multimodal Slide & Diagram Parser   :2026-10-01, 2026-10-22
+    Synchronized PDF Viewer Integration :2026-10-05, 2026-10-26
+    Production Telemetry & Observability:2026-10-10, 2026-10-31
 ```
 
 ### 1. Multimodal Lecture Slide & Diagram Ingestion
