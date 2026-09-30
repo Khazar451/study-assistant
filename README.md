@@ -36,8 +36,9 @@
   - [6.2 Environment Configuration](#62-environment-configuration)
   - [6.3 Unified CLI Usage (Chat, Ask & Ingest)](#63-unified-cli-usage-chat-ask--ingest)
   - [6.4 End-to-End Python API Example](#64-end-to-end-python-api-example)
-  - [6.5 Running the Test Suite](#65-running-the-test-suite)
-  - [6.6 Running Academic Benchmarks](#66-running-academic-benchmarks)
+  - [6.5 Running the Modern Web Application (Next.js + FastAPI)](#65-running-the-modern-web-application-nextjs--fastapi)
+  - [6.6 Running the Test Suite](#66-running-the-test-suite)
+  - [6.7 Running Academic Benchmarks](#67-running-academic-benchmarks)
 - [7. Questions for Faculty Advisors & Academic Feedback](#7-questions-for-faculty-advisors--academic-feedback)
 - [8. Hackathon Evaluation Alignment](#8-hackathon-evaluation-alignment)
 - [9. License & Acknowledgments](#9-license--acknowledgments)
@@ -68,9 +69,13 @@ The following diagram illustrates the complete dataflow from raw course document
 ```mermaid
 flowchart TB
     subgraph CLIENTS["Client Interfaces"]
+        WEB["Next.js 16 Web UI (frontend/)"]
         CLI["Terminal CLI (--chat / --ask / --ingest)"]
         API["Python Library (from src import StudyAssistant)"]
-        WEB["Streamlit Web UI (Milestone 6)"]
+    end
+
+    subgraph SERVER["Web Application Server (src/api/server.py)"]
+        SRV["FastAPI Server (REST & SSE Streaming)"]
     end
 
     subgraph ORCHESTRATOR["Unified Facade: StudyAssistant (src/assistant.py)"]
@@ -105,9 +110,10 @@ flowchart TB
         P --> Q[Final Grounded Answer<br/>+ Verified Inline Citations<br/>+ Streaming Tokens]
     end
 
+    WEB --> SRV
+    SRV --> FACADE
     CLI --> FACADE
     API --> FACADE
-    WEB --> FACADE
 
     FACADE -->|"ingest(path)"| INGESTION
     FACADE -->|"search(query)"| QUERY
@@ -240,35 +246,27 @@ gantt
     Semantic Reranker (StudyReranker)   :done, 2026-09-26, 2026-09-27
     Unified Assistant Orchestrator & CLI:done, 2026-09-28, 2026-09-29
     Academic Evaluation & Benchmarks    :done, 2026-09-28, 2026-09-29
+    Next.js 16 Web UI & FastAPI Server  :done, 2026-09-28, 2026-09-30
+    Active Recall & Study Flashcards    :done, 2026-09-29, 2026-09-30
     section Upcoming Roadmap
-    Interactive Streamlit Web UI        :active, 2026-09-29, 2026-10-03
     Multimodal Slide & Diagram Parser   :2026-10-04, 2026-10-08
     Synchronized PDF Viewer             :2026-10-08, 2026-10-12
-    Active Recall & Quiz Engine         :2026-10-11, 2026-10-15
+    Production Telemetry & Observability:2026-10-12, 2026-10-16
 ```
 
-### 1. Interactive Streamlit Web UI (`app.py`)
-- **Goal:** Provide an intuitive browser-based interface for students and educators with document drag-and-drop ingestion, interactive conversation threads, and collapsible source citations.
-- **Implementation:** Built using Streamlit, connecting directly to `StudyAssistant` with real-time token streaming (`st.write_stream`) and indexed document management.
-
-### 2. Multimodal Lecture Slide & Diagram Ingestion
+### 1. Multimodal Lecture Slide & Diagram Ingestion
 - **Goal:** University lecture slides are heavily visual (e.g., circuit diagrams, biological pathways, chemistry reactions, neural network architectures). Text extraction via PDF parsers loses this visual context.
 - **Implementation:** Leverage NVIDIA NIM Vision-Language Models (`meta/llama-3.2-11b-vision-instruct` / `nebius-vision`) to generate rich textual captions and OCR descriptions for images and diagrams during the ingestion phase.
 
-### 3. Interactive Web Application with Synchronized PDF Viewer
+### 2. Synchronized PDF Viewer Integration
 - **Goal:** Provide a seamless, split-screen desktop and web UI.
-- **Implementation:** FastAPI backend serving Server-Sent Events (SSE) coupled with a modern React/TypeScript frontend. When a student clicks an inline citation `[Source: lecture3.pdf, Page: 14]`, the embedded PDF viewer will jump directly to page 14 and highlight the exact matching excerpt.
+- **Implementation:** When a student clicks an inline citation `[Source: lecture3.pdf, Page: 14]`, an embedded PDF viewer will jump directly to page 14 and highlight the exact matching excerpt.
 
-### 4. Automated Active Recall Engine (Flashcards & Practice Quizzes)
-- **Goal:** Transition from a passive question-answering tool to an active study companion.
-- **Implementation:** Implement structured JSON generation prompts that extract key definitions, formulas, and multiple-choice questions grounded in the ingested documents to support Spaced Repetition (Anki exportable format).
-
-### 5. Quantitative Academic Evaluation via Ragas & TruLens
-- **Goal:** Rigorously quantify RAG performance to present empirical benchmarks to professors and hackathon judges.
-- **Metrics to Evaluate:**
-  - **Faithfulness (Groundedness):** Percentage of generated claims supported by retrieved context.
-  - **Answer Relevance:** Semantic alignment between student question and answer.
-  - **Context Recall & Precision:** Retrieval effectiveness against curated university exam rubrics.
+### 3. Production Telemetry & Real-Time RAG Observability
+- **Goal:** Rigorously monitor live RAG performance, latency budgets, and model drift during active study sessions.
+- **Metrics to Track:**
+  - **Faithfulness (Groundedness):** Real-time validation of generated claims against retrieved context via TruLens.
+  - **Latency Budgets:** Step-by-step retrieval, reranking, and time-to-first-token (TTFT) tracking.
 
 ---
 
@@ -451,13 +449,13 @@ npm run dev
 
 ### 6.6 Running the Test Suite
 
-Execute the full suite of unit and integration tests (101 tests passing):
+Execute the full suite of unit and integration tests (119 tests passing):
 
 ```bash
 python -m pytest tests/ -v
 ```
 
-### 6.6 Running Academic Benchmarks
+### 6.7 Running Academic Benchmarks
 
 Run the quantitative comparative benchmark suite across Naive Baseline RAG, Query Augmented RAG, and Our Full Advanced Pipeline:
 
