@@ -230,28 +230,28 @@ def run_interactive_chat(assistant: StudyAssistant):
     """Run an interactive study chat session in the terminal."""
     total_chunks = assistant.count()
     print("\n" + "=" * 60)
-    print("🎓 STUDY ASSISTANT: GROUNDED ACADEMIC TUTOR")
-    print(f"📚 Vector Database: {total_chunks} chunks indexed ({assistant.persist_directory})")
-    print("💡 Commands: Type '/exit' to quit, '/count' to inspect database.")
+    print("STUDY ASSISTANT: GROUNDED ACADEMIC TUTOR")
+    print(f"Vector Database: {total_chunks} chunks indexed ({assistant.persist_directory})")
+    print("Commands: Type '/exit' to quit, '/count' to inspect database.")
     print("=" * 60 + "\n")
 
     if total_chunks == 0:
-        print("⚠️ Warning: Your vector database is currently empty.")
+        print("Warning: Your vector database is currently empty.")
         print("   Run `python -m src.assistant --ingest path/to/document.pdf` to add materials.\n")
 
     while True:
         try:
-            query = input("\n📖 Student: ").strip()
+            query = input("\nStudent: ").strip()
             if not query:
                 continue
             if query.lower() in {"/exit", "exit", "quit"}:
-                print("\nGoodbye and happy studying! 🚀\n")
+                print("\nGoodbye and happy studying!\n")
                 break
             if query.lower() == "/count":
-                print(f"📊 Total indexed chunks: {assistant.count()}")
+                print(f"Total indexed chunks: {assistant.count()}")
                 continue
 
-            print("\n🤖 Tutor: ", end="", flush=True)
+            print("\nTutor: ", end="", flush=True)
             stream = assistant.ask(query, stream=True)
             for token in stream:
                 sys.stdout.write(token)
@@ -284,12 +284,12 @@ def main():
     assistant = StudyAssistant(persist_directory=args.db_path)
 
     if args.ingest:
-        print(f"📄 Ingesting course materials from: {args.ingest} ...")
+        print(f"Ingesting course materials from: {args.ingest} ...")
         res = assistant.ingest(args.ingest)
-        print(f"✅ Ingestion complete: {res}")
+        print(f"Ingestion complete: {res}")
     elif args.ask:
-        print(f"\n📖 Question: {args.ask}")
-        print("🤖 Generating answer...\n")
+        print(f"\nQuestion: {args.ask}")
+        print("Generating answer...\n")
         response = assistant.ask(
             query=args.ask,
             stream=False,

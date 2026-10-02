@@ -164,11 +164,11 @@ def main():
 
     if args.file:
         res = pipeline.ingest_file(args.file)
-        print(f"✅ Ingested {res['source']}: {res['chunks_count']} chunks ({res['status']})")
+        print(f"Ingested {res['source']}: {res['chunks_count']} chunks ({res['status']})")
     elif args.dir:
         res = pipeline.ingest_directory(args.dir)
         print(
-            f"✅ Ingestion complete: {len(res['successful'])} files succeeded, {len(res['failed'])} files failed."
+            f"Ingestion complete: {len(res['successful'])} files succeeded, {len(res['failed'])} files failed."
         )
 
 

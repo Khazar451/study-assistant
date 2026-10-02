@@ -33,4 +33,6 @@ frontend/node_modules/
 
 # Local user data & uploads
 data/
+.logs/
+*.log
 

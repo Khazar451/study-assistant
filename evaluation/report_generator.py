@@ -33,7 +33,7 @@ def generate_markdown_report(benchmark_data: Dict[str, Any]) -> str:
     faith_diff = delta_pct(naive.get("faithfulness", 0), advanced.get("faithfulness", 0))
 
     md = []
-    md.append("# 📊 Academic RAG Benchmark Evaluation Report")
+    md.append("# Academic RAG Benchmark Evaluation Report")
     md.append("")
     md.append(f"*Generated automatically by Study Assistant Benchmark Suite | Test Cases: {benchmark_data.get('total_queries', 0)}*")
     md.append("")

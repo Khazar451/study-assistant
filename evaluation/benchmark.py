@@ -183,7 +183,7 @@ class BenchmarkRunner:
             if query_mode in ("colloquial", "both"):
                 queries_to_test.append((item, item.colloquial_query, "colloquial"))
 
-        print(f"\n🚀 Running Academic RAG Benchmark ({len(queries_to_test)} test cases)...")
+        print(f"\nRunning Academic RAG Benchmark ({len(queries_to_test)} test cases)...")
         print("=" * 65)
 
         for idx, (item, query, phrasing) in enumerate(queries_to_test, 1):
@@ -277,9 +277,9 @@ def main():
     json_path = save_json_results(results, f"{args.out_dir}/benchmark_results.json")
 
     print("\n" + "=" * 65)
-    print("✅ BENCHMARK COMPLETE!")
-    print(f"📄 Markdown Report: {md_path}")
-    print(f"📊 JSON Dataset:    {json_path}")
+    print("BENCHMARK COMPLETE!")
+    print(f"Markdown Report: {md_path}")
+    print(f"JSON Dataset:    {json_path}")
     print("=" * 65 + "\n")
     print(md_report)
 

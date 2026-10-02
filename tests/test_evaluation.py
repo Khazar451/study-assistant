@@ -192,7 +192,7 @@ def test_report_generator_markdown_and_json(tmp_path):
 
     # Generate Markdown
     md_content = generate_markdown_report(results)
-    assert "# 📊 Academic RAG Benchmark Evaluation Report" in md_content
+    assert "# Academic RAG Benchmark Evaluation Report" in md_content
     assert "Executive Comparison" in md_content
     assert "Context Recall@5" in md_content
 

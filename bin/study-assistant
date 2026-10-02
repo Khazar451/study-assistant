@@ -1,0 +1,243 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# Study Assistant: Grounded Academic RAG Tutor Launcher
+# Launches the FastAPI backend, Next.js frontend, and opens the browser.
+# ==============================================================================
+
+set -e
+
+# Resolve project directory dynamically (even if invoked via symlink)
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do
+    DIR="$( cd -P "$( dirname "$SOURCE" )" >/dev/null 2>&1 && pwd )"
+    SOURCE="$(readlink "$SOURCE")"
+    [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SCRIPT_DIR="$( cd -P "$( dirname "$SOURCE" )" >/dev/null 2>&1 && pwd )"
+PROJECT_DIR="$( cd -P "$SCRIPT_DIR/.." >/dev/null 2>&1 && pwd )"
+
+# Sanity check: Ensure project root has src/assistant.py
+if [ ! -f "$PROJECT_DIR/src/assistant.py" ]; then
+    PROJECT_DIR="/home/khazar/Desktop/study-assistant"
+fi
+
+cd "$PROJECT_DIR"
+
+# Locate Python environment
+if [ -x "$PROJECT_DIR/.env/bin/python" ]; then
+    PYTHON="$PROJECT_DIR/.env/bin/python"
+elif [ -x "$PROJECT_DIR/.venv/bin/python" ]; then
+    PYTHON="$PROJECT_DIR/.venv/bin/python"
+elif command -v python3 >/dev/null 2>&1; then
+    PYTHON="$(command -v python3)"
+else
+    echo "[ERROR] Python 3 not found. Please activate your virtual environment."
+    exit 1
+fi
+
+# Locate Node/npm
+if ! command -v npm >/dev/null 2>&1 && ! command -v node >/dev/null 2>&1; then
+    # Check ~/.local/bin or ~/.hermes/node
+    if [ -x "/home/khazar/.local/bin/npm" ]; then
+        export PATH="/home/khazar/.local/bin:$PATH"
+    fi
+fi
+
+# Function to display help
+show_help() {
+    cat << EOF
+Study Assistant: Grounded Academic RAG Tutor
+
+Usage:
+  study-assistant              Launch web application and open browser (default)
+  study-assistant --web        Explicitly launch full-stack web application
+  study-assistant --chat       Launch interactive terminal tutor session
+  study-assistant --ask "..."  Ask a question directly in the terminal
+  study-assistant --ingest PATH Ingest course materials into the knowledge base
+  study-assistant --status     Check knowledge base and model status
+  study-assistant --logs       Display recent server logs
+  study-assistant --help       Show this help message
+
+EOF
+}
+
+# Function to find next available TCP port
+find_available_port() {
+    local port="$1"
+    while :; do
+        if ! ss -tlpn "( sport = :$port )" 2>/dev/null | grep -q ":$port"; then
+            echo "$port"
+            return 0
+        fi
+        port=$((port + 1))
+    done
+}
+
+# Open browser helper
+open_browser() {
+    local url="$1"
+    if [ -n "$DISPLAY" ] || [ -n "$WAYLAND_DISPLAY" ]; then
+        if command -v xdg-open >/dev/null 2>&1; then
+            xdg-open "$url" >/dev/null 2>&1 &
+        elif command -v sensible-browser >/dev/null 2>&1; then
+            sensible-browser "$url" >/dev/null 2>&1 &
+        elif [ -n "$BROWSER" ]; then
+            "$BROWSER" "$url" >/dev/null 2>&1 &
+        else
+            "$PYTHON" -m webbrowser "$url" >/dev/null 2>&1 &
+        fi
+    fi
+}
+
+# CLI pass-through modes
+if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
+    show_help
+    exit 0
+elif [ "$1" = "--chat" ] || [ "$1" = "-c" ]; then
+    echo "[INFO] Launching Study Assistant Interactive Terminal Chat..."
+    PYTHONPATH="$PROJECT_DIR" exec "$PYTHON" -m src.assistant --chat
+elif [ "$1" = "--ask" ]; then
+    shift
+    PYTHONPATH="$PROJECT_DIR" exec "$PYTHON" -m src.assistant --ask "$@"
+elif [ "$1" = "--ingest" ]; then
+    shift
+    PYTHONPATH="$PROJECT_DIR" exec "$PYTHON" -m src.assistant --ingest "$@"
+elif [ "$1" = "--status" ]; then
+    echo "[INFO] Querying Study Assistant Status..."
+    PYTHONPATH="$PROJECT_DIR" exec "$PYTHON" -c "
+from src.assistant import StudyAssistant
+assistant = StudyAssistant()
+print(f'Indexed Chunks: {assistant.count()}')
+print('System: Ready')
+"
+    exit 0
+elif [ "$1" = "--logs" ]; then
+    echo "[INFO] Tailing logs (Press Ctrl+C to exit)..."
+    mkdir -p "$PROJECT_DIR/.logs"
+    touch "$PROJECT_DIR/.logs/api.log" "$PROJECT_DIR/.logs/frontend.log"
+    tail -f "$PROJECT_DIR/.logs/api.log" "$PROJECT_DIR/.logs/frontend.log"
+    exit 0
+fi
+
+# ==============================================================================
+# Launch Full-Stack Web Application (Default Mode)
+# ==============================================================================
+
+mkdir -p "$PROJECT_DIR/.logs"
+API_LOG="$PROJECT_DIR/.logs/api.log"
+FE_LOG="$PROJECT_DIR/.logs/frontend.log"
+
+# Find non-conflicting ports
+BACKEND_PORT=$(find_available_port 8000)
+FRONTEND_PORT=$(find_available_port 3000)
+
+echo ""
+echo "=================================================================="
+echo "  Study Assistant: Grounded Academic RAG Tutor"
+echo "  NVIDIA NIM & Nebius AI Studio Accelerated"
+echo "=================================================================="
+echo "  Backend Service:   http://127.0.0.1:${BACKEND_PORT}"
+echo "  Web Application:   http://localhost:${FRONTEND_PORT}"
+echo "  Logs Directory:    ${PROJECT_DIR}/.logs"
+echo "=================================================================="
+echo ""
+
+# Cleanup trap for graceful shutdown
+cleanup() {
+    echo ""
+    echo "[INFO] Shutting down Study Assistant services..."
+    if [ -n "$FRONTEND_PID" ]; then
+        kill -TERM "$FRONTEND_PID" 2>/dev/null || true
+        pkill -P "$FRONTEND_PID" 2>/dev/null || true
+    fi
+    if [ -n "$BACKEND_PID" ]; then
+        kill -TERM "$BACKEND_PID" 2>/dev/null || true
+        pkill -P "$BACKEND_PID" 2>/dev/null || true
+    fi
+    echo "[OK] All services stopped. Goodbye!"
+    exit 0
+}
+trap cleanup INT TERM
+
+# 1. Start FastAPI Backend
+echo "[*] Starting FastAPI Backend on port ${BACKEND_PORT}..."
+PYTHONPATH="$PROJECT_DIR" "$PYTHON" -m uvicorn src.api.server:app \
+    --host 127.0.0.1 \
+    --port "${BACKEND_PORT}" \
+    > "$API_LOG" 2>&1 &
+BACKEND_PID=$!
+
+# Wait for backend health
+BACKEND_READY=false
+for i in $(seq 1 30); do
+    if curl -s "http://127.0.0.1:${BACKEND_PORT}/api/status" 2>/dev/null | grep -q "status"; then
+        BACKEND_READY=true
+        break
+    fi
+    # Check if process died
+    if ! kill -0 "$BACKEND_PID" 2>/dev/null; then
+        echo "[ERROR] Backend failed to start. Last log lines:"
+        tail -n 20 "$API_LOG"
+        exit 1
+    fi
+    sleep 0.5
+done
+
+if [ "$BACKEND_READY" = true ]; then
+    echo "[OK] Backend is ready! (PID: ${BACKEND_PID})"
+else
+    echo "[WARN] Backend took longer than expected to report status, continuing..."
+fi
+
+# 2. Start Next.js Frontend
+echo "[*] Starting Next.js Web Frontend on port ${FRONTEND_PORT}..."
+(
+    cd "$PROJECT_DIR/frontend"
+    export PORT="${FRONTEND_PORT}"
+    export API_URL="http://127.0.0.1:${BACKEND_PORT}"
+    exec npx next dev -p "${FRONTEND_PORT}" > "$FE_LOG" 2>&1
+) &
+FRONTEND_PID=$!
+
+# Wait for frontend readiness
+FRONTEND_READY=false
+for i in $(seq 1 40); do
+    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${FRONTEND_PORT}" 2>/dev/null || true)
+    if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "304" ]; then
+        FRONTEND_READY=true
+        break
+    fi
+    # Check if process died
+    if ! kill -0 "$FRONTEND_PID" 2>/dev/null; then
+        echo "[ERROR] Frontend failed to start. Last log lines:"
+        tail -n 20 "$FE_LOG"
+        cleanup
+        exit 1
+    fi
+    sleep 0.5
+done
+
+if [ "$FRONTEND_READY" = true ]; then
+    echo "[OK] Frontend is ready! (PID: ${FRONTEND_PID})"
+else
+    echo "[WARN] Frontend is initializing, proceeding to open browser..."
+fi
+
+URL="http://localhost:${FRONTEND_PORT}"
+echo ""
+echo "[*] Opening browser at: ${URL}"
+open_browser "$URL"
+
+echo ""
+echo "[INFO] Study Assistant is now running!"
+echo "       Browser URL:  ${URL}"
+echo "       Backend API:  http://127.0.0.1:${BACKEND_PORT}/docs"
+echo "       Press [Ctrl+C] to stop all services cleanly."
+echo ""
+
+# Keep running and wait for Ctrl+C
+while kill -0 "$BACKEND_PID" 2>/dev/null && kill -0 "$FRONTEND_PID" 2>/dev/null; do
+    sleep 1
+done
+
+cleanup

@@ -1,4 +1,4 @@
-# 📊 Academic RAG Benchmark Evaluation Report
+# Academic RAG Benchmark Evaluation Report
 
 *Generated automatically by Study Assistant Benchmark Suite | Test Cases: 10*
 
