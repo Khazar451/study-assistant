@@ -594,11 +594,12 @@ export default function StudyAssistantApp() {
               {activeTab === "materials" && "Course Materials"}
               {activeTab === "flashcards" && "Study Flashcards"}
             </h2>
-            <span className="header-subtitle">
-              {activeTab === "chat" && "Grounded Page-Level Citations"}
-              {activeTab === "materials" && "PDF, Markdown and Text Indexer"}
-              {activeTab === "flashcards" && "Exam Preparation and Review Cards"}
-            </span>
+            {activeTab === "materials" && (
+              <span className="header-subtitle">PDF, Markdown and Text Indexer</span>
+            )}
+            {activeTab === "flashcards" && (
+              <span className="header-subtitle">Exam Preparation and Review Cards</span>
+            )}
           </div>
 
           <div className="header-actions">
