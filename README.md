@@ -8,7 +8,7 @@
 [![Nebius AI Studio](https://img.shields.io/badge/Nebius-AI%20Studio%20Cloud-00F5D4.svg)](https://studio.nebius.ai/)
 [![Global AI Hackathon](https://img.shields.io/badge/Nebius%20x%20NVIDIA-Global%20AI%20Hackathon-76B900.svg?logo=nvidia&logoColor=white)](https://github.com/Khazar451/study-assistant)
 [![Vector DB](https://img.shields.io/badge/ChromaDB-Persistent%20HNSW-FF6B6B.svg)](https://www.trychroma.com/)
-[![Tests: 119 Passing](https://img.shields.io/badge/tests-119%20passing-brightgreen.svg)](tests/)
+[![Tests: 143 Passing](https://img.shields.io/badge/tests-143%20passing-brightgreen.svg)](tests/)
 [![CI Status](https://github.com/Khazar451/study-assistant/actions/workflows/test.yml/badge.svg)](https://github.com/Khazar451/study-assistant/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -133,11 +133,12 @@ The ingestion pipeline handles raw document intake, metadata extraction, semanti
 
 | Module | Core Class / Function | Technical Responsibility |
 | :--- | :--- | :--- |
-| [`loader.py`](src/ingestion/loader.py) | `DocumentLoader` | Ingests `.pdf`, `.txt`, and `.md` files. Uses `pypdf` to extract text while tracking **exact 1-indexed page numbers** and uniform file metadata. |
+| [`loader.py`](src/ingestion/loader.py) | `DocumentLoader` | Ingests `.pdf`, `.txt`, `.md`, and slide images (`.png`, `.jpg`, `.jpeg`). Uses `pypdf` to extract text and embedded slide diagrams while tracking **exact 1-indexed page numbers**, visual flags, and uniform file metadata. |
+| [`vision.py`](src/ingestion/vision.py) | `VisionDescriber` | Multimodal vision client powered by **NVIDIA NIM** (`meta/llama-3.2-11b-vision-instruct`). Performs aspect-preserving thumbnail scaling, noise filtering (skips icons/dividers <150x150 or <1KB), SHA-256 deduplication caching, and generates pedagogical descriptions for lecture slide figures and system diagrams. |
 | [`chunker.py`](src/ingestion/chunker.py) | `DocumentChunker`, `chunk_documents` | Employs `RecursiveCharacterTextSplitter` configured for semantic boundary conservation (`\n\n`, `\n`, `. `, ` `). Configurable chunk size (default: 500 chars) and overlap (default: 50 chars) to prevent context fragmentation across formulas. |
-| [`embedder.py`](src/ingestion/embedder.py) | `NvidiaEmbedder` | Integrates with **NVIDIA NIM** retrieval models (default: `nvidia/llama-nemotron-embed-vl-1b-v2`). Crucially implements asymmetric embedding: distinguishes between `input_type="passage"` for document chunks and `input_type="query"` for user queries. Supports batched embedding generation. |
+| [`embedder.py`](src/ingestion/embedder.py) | `NvidiaEmbedder` | Integrates with **NVIDIA NIM** retrieval models (default: `nvidia/llama-nemotron-embed-vl-1b-v2`). Implements asymmetric embedding: distinguishes between `input_type="passage"` for document chunks and `input_type="query"` for user queries. Supports batched embedding generation (batch size 64) with exponential backoff retries. |
 | [`indexer.py`](src/ingestion/indexer.py) | `ChromaIndexer` | Wraps ChromaDB with persistent HNSW index using cosine space (`hnsw:space: cosine`). Implements metadata sanitization, deterministic SHA-256 chunk IDs (`_generate_chunk_id`), and **ghost chunk prevention** via `delete_by_path` during re-ingestion. |
-| [`pipeline.py`](src/ingestion/pipeline.py) | `IngestionPipeline`, `main()` | Orchestrates the entire ETL workflow with CLI argument parsing (`--file`, `--dir`, `--batch-size`), directory recursion, and isolated exception handling. |
+| [`pipeline.py`](src/ingestion/pipeline.py) | `IngestionPipeline`, `main()` | Orchestrates the entire ETL workflow with CLI argument parsing (`--file`, `--dir`, `--batch-size`), directory recursion, real-time progress callbacks, and isolated exception handling. |
 
 ### 3.2 Advanced Retrieval & Query Intelligence (`src/retrieval/`)
 
@@ -148,6 +149,7 @@ Rather than relying on naive single-shot vector lookups, the retrieval layer imp
 | [`query_augmenter.py`](src/retrieval/query_augmenter.py) | `QueryAugmenter` | Implements three prompt-engineered retrieval strategies via NVIDIA NIM LLMs (`meta/llama-3.2-11b-vision-instruct`):<br/>• **Query Rewriting:** Converts informal student queries into technical academic terminology.<br/>• **Multi-Query Expansion:** Generates diverse paraphrases and sub-queries to maximize recall.<br/>• **HyDE (Hypothetical Document Embeddings):** Generates a synthesized textbook passage answering the question, enabling passage-to-passage semantic matching. |
 | [`retriever.py`](src/retrieval/retriever.py) | `StudyRetriever` | Computes cosine similarity ($1 - \text{distance}$), enforces configurable minimum score thresholds (`score_threshold`), executes multi-query search with max-score pooling deduplication, and formats context blocks with source and page tags (`format_context`). |
 | [`reranker.py`](src/retrieval/reranker.py) | `StudyReranker` | Semantic cross-scoring layer. Evaluates candidate chunks via single-roundtrip LLM listwise scoring (`meta/llama-3.2-11b-vision-instruct`) or dedicated NVIDIA `/v1/ranking` microservices. Features sigmoid logit normalization, monotonic negative-safe imputation ($\min(\text{scores}) - 10^{-4}$), and stable tie-breaking. |
+| [`tavily_search.py`](src/retrieval/tavily_search.py) | `TavilySearchClient` | Grounded academic web search integration via Tavily API. Filters for high-authority academic domains (`.edu`, `arxiv.org`, `wikipedia.org`, `.gov`, `.org`) with automatic fallback to mock mode for offline testing. |
 
 ### 3.3 Grounded Generation Engine & Guardrails (`src/generation/`)
 
@@ -180,21 +182,23 @@ ightarrow$ grounded generation with page-level citations. Supports real-time tok
 
 ### 3.5 Automated Testing & CI/CD Pipeline (`tests/` & `.github/`)
 
-- **11 Comprehensive Unit Test Suites (109 Tests Passing in ~1.25s):**
-  - `tests/test_loader.py`: Validates PDF page extraction, text reading, and unsupported format rejections (5 tests).
+- **14 Comprehensive Unit & Integration Test Suites (143 Tests Passing in ~1.5s):**
+  - `tests/test_loader.py`: Validates PDF page extraction, image loading, text reading, and unsupported format rejections (7 tests).
+  - `tests/test_vision.py`: Tests NVIDIA NIM vision model integration, dimension/noise filtering, RGBA transparency, and SHA-256 caching (9 tests).
   - `tests/test_chunker.py`: Tests boundary preservation, overlap logic, and empty input handling (5 tests).
-  - `tests/test_embedder.py`: Validates API payload construction, input typing (`passage` vs `query`), and batching (6 tests).
+  - `tests/test_embedder.py`: Validates API payload construction, input typing (`passage` vs `query`), and batched embeddings (6 tests).
   - `tests/test_indexer.py`: Tests ChromaDB upsert, query similarity, and path-based deletion (4 tests).
-  - `tests/test_pipeline.py`: Tests end-to-end ingestion flow and error isolation (3 tests).
+  - `tests/test_pipeline.py`: Tests end-to-end ingestion flow, progress callbacks, and error isolation (3 tests).
   - `tests/test_query_augmenter.py`: Verifies rewrite, expand, and HyDE prompt executions with mocked LLM clients (11 tests).
   - `tests/test_retriever.py`: Tests similarity scoring, threshold filtering, and multi-query pooling (9 tests).
   - `tests/test_reranker.py`: Validates semantic reranking, sigmoid normalization, monotonic negative imputation, index mapping, and fallback paths (20 tests).
   - `tests/test_generator.py`: Verifies provider switching (NVIDIA vs Nebius), citations, and streaming token yields (10 tests).
   - `tests/test_assistant.py`: Tests `StudyAssistant` facade initialization, dependency injection, ingestion delegation, streaming/non-streaming ask, empty query & DB guards, search, count/clear, and CLI command execution including interactive chat (18 tests).
   - `tests/test_evaluation.py`: Validates precision, recall, MRR, source filtering, faithfulness scoring, edge cases, dataset integrity, and report export (18 tests).
-  - `tests/test_api.py`: Validates FastAPI status, document inspection, file/sample ingestion, ask, SSE streaming, search, and flashcard generation (10 tests).
+  - `tests/test_api.py`: Validates FastAPI status, document inspection, background job processing, image and sample ingestion, ask, SSE streaming, search, flashcard generation, and Prometheus metrics (14 tests).
+  - `tests/test_tavily.py`: Validates Tavily client initialization, domain filtering, mock mode, and hybrid web RAG fallback (9 tests).
 - **Continuous Integration (CI):**
-  - Configured via `.github/workflows/test.yml` running Pytest automatically on push and pull request against Python 3.11. All 119 tests run green on GitHub Actions without consuming live API credits.
+  - Configured via `.github/workflows/test.yml` running Pytest automatically on push and pull request against Python 3.11. All 143 tests run green on GitHub Actions without consuming live API credits.
 
 ### 3.6 Modern Web Application & REST API Layer (`frontend/` & `src/api/`)
 
@@ -204,8 +208,8 @@ Following modern 2026 frontend vibe coding best practices, the application featu
 | :--- | :--- | :--- |
 | **Frontend Framework** | **Next.js 16 (App Router, React 19, TypeScript)** | High-prior agent architecture, responsive split-screen layouts, instant hot reloading via Turbopack. |
 | **Design System** | **Vanilla CSS (Linear/Vercel Aesthetic)** | Minimalist, zero-emoji typography, dark mode (`#0b0f17`) and light mode (`#f8fafc`) with dynamic CSS theme toggle. |
-| **REST & SSE Backend** | **FastAPI + Uvicorn (`src/api/server.py`)** | Asynchronous typed endpoints with Server-Sent Events (`/api/ask/stream`) for typewriter token streaming and resilient offline fallback. |
-| **Academic Modules** | **3 Focused Views** | **Academic Tutor** (grounded citations & Deep Search), **Course Materials** (PDF/MD/TXT drag-and-drop & sample loader), and **Study Flashcards** (active recall with 3D flip card self-testing). |
+| **REST & SSE Backend** | **FastAPI + Uvicorn (`src/api/server.py`)** | Asynchronous typed endpoints with Server-Sent Events (`/api/ask/stream`) for typewriter token streaming, background ingestion job polling (`/api/ingest/status/{job_id}`), and Prometheus telemetry (`/metrics`). |
+| **Academic Modules** | **3 Focused Views** | **Academic Tutor** (grounded citations, web search augmentation, diagram badges), **Course Materials** (PDF slide decks, `.png`/`.jpg` diagrams, Markdown notes, sample loader with live progress tracking), and **Study Flashcards** (active recall with 3D flip card self-testing). |
 
 ### 3.7 Quantitative Academic Evaluation & Benchmark Suite (`evaluation/`)
 
@@ -249,15 +253,22 @@ gantt
     Academic Evaluation & Benchmarks    :done, 2026-09-16, 2026-09-30
     Next.js 16 Web UI & FastAPI Server  :done, 2026-09-16, 2026-09-30
     Active Recall & Study Flashcards    :done, 2026-09-18, 2026-09-30
+    Prometheus Metrics & Tavily Search  :done, 2026-10-01, 2026-10-04
+    Multimodal Slide & Diagram Parser   :done, 2026-10-01, 2026-10-05
     section Upcoming Roadmap
-    Multimodal Slide & Diagram Parser   :2026-10-01, 2026-10-22
-    Synchronized PDF Viewer Integration :2026-10-05, 2026-10-26
+    Synchronized PDF Viewer Integration :2026-10-06, 2026-10-26
     Production Telemetry & Observability:2026-10-10, 2026-10-31
 ```
 
-### 1. Multimodal Lecture Slide & Diagram Ingestion
-- **Goal:** University lecture slides are heavily visual (e.g., circuit diagrams, biological pathways, chemistry reactions, neural network architectures). Text extraction via PDF parsers loses this visual context.
-- **Implementation:** Leverage NVIDIA NIM Vision-Language Models (`meta/llama-3.2-11b-vision-instruct` / `nebius-vision`) to generate rich textual captions and OCR descriptions for images and diagrams during the ingestion phase.
+### 1. Multimodal Lecture Slide & Diagram Ingestion [Completed - October 2026]
+- **Goal:** University lecture slides and technical papers are heavily visual (e.g., circuit diagrams, biological pathways, chemistry reactions, neural network architectures). Standard text extraction drops this crucial visual context.
+- **Implemented Architecture:**
+  - **VisionDescriber Engine (`src/ingestion/vision.py`):** Powered by **NVIDIA NIM** (`meta/llama-3.2-11b-vision-instruct`). Generates comprehensive pedagogical descriptions, transcribing text labels, structural flows, axes, legends, and domain concepts.
+  - **Embedded Figure & Slide Ingestion:** Extracted visual figures directly from PDF pages (`pypdf.page.images`) and added native support for standalone lecture slides (`.png`, `.jpg`, `.jpeg`).
+  - **Image Preprocessing & Noise Filtering:** Aspect-preserving thumbnail downscaling (max 1024x1024 px), RGBA alpha-channel composition on white background, and noise filtering skipping decorative icons, logos, and horizontal rules (<150x150 px, <1000 bytes, or aspect ratio outside 0.15 - 6.5).
+  - **SHA-256 Deduplication Caching:** Content-hash caching prevents duplicate vision API calls across repeated slide templates or re-ingestions.
+  - **Structured Markdown Embedding:** Formats descriptions into structured context blocks (`[Visual Diagram / Slide Figure on Page X]: ...`) indexed into ChromaDB alongside page text.
+  - **Frontend UI Indicators:** Document inventory displays visual diagram counts and badges, while the Citation Inspector renders explicit `[Diagram / Visual Context]` badges for multimodal evidence.
 
 ### 2. Synchronized PDF Viewer Integration
 - **Goal:** Provide a seamless, split-screen desktop and web UI.
@@ -305,29 +316,33 @@ study-assistant/
 │   │   ├── embedder.py              # NVIDIA NIM embedding client (asymmetric query/passage)
 │   │   ├── indexer.py               # ChromaDB client with HNSW indexing & hash IDs
 │   │   ├── loader.py                # Multi-format document loader with page retention
-│   │   └── pipeline.py              # End-to-end ingestion pipeline & CLI entrypoint
+│   │   ├── pipeline.py              # End-to-end ingestion pipeline & CLI entrypoint
+│   │   └── vision.py                # NVIDIA NIM vision describer for slides & diagrams
 │   ├── retrieval/                   # Search, query expansion & context synthesis
 │   │   ├── __init__.py
 │   │   ├── query_augmenter.py       # Query rewriting, multi-query expansion & HyDE
 │   │   ├── reranker.py              # Semantic cross-encoder & LLM listwise reranker
-│   │   └── retriever.py             # Vector similarity search & context formatting
+│   │   ├── retriever.py             # Vector similarity search & context formatting
+│   │   └── tavily_search.py         # Grounded academic web search integration
 │   └── generation/                  # Grounded LLM response generation
 │       ├── __init__.py
 │       └── generator.py             # Dual NVIDIA/Nebius LLM client & citation engine
-├── tests/                           # Complete test suite (119 passing tests)
+├── tests/                           # Complete test suite (143 passing tests)
 │   ├── conftest.py                  # Pytest fixtures & environment setup
-│   ├── test_api.py                  # FastAPI REST endpoints & SSE streaming (10 tests)
+│   ├── test_api.py                  # FastAPI REST endpoints & SSE streaming (14 tests)
 │   ├── test_assistant.py            # Unit tests for Orchestrator & CLI (18 tests)
 │   ├── test_chunker.py              # Unit tests for text chunking (5 tests)
 │   ├── test_embedder.py             # Unit tests for NVIDIA embedding client (6 tests)
 │   ├── test_evaluation.py           # Unit tests for evaluation metrics & benchmarks (18 tests)
 │   ├── test_generator.py            # Unit tests for LLM generation & fallback logic (10 tests)
 │   ├── test_indexer.py              # Unit tests for ChromaDB storage & queries (4 tests)
-│   ├── test_loader.py               # Unit tests for document loading (5 tests)
+│   ├── test_loader.py               # Unit tests for document loading (7 tests)
 │   ├── test_pipeline.py             # Integration tests for ingestion pipeline (3 tests)
 │   ├── test_query_augmenter.py      # Unit tests for query augmentation strategies (11 tests)
 │   ├── test_reranker.py             # Unit tests for semantic reranker (20 tests)
-│   └── test_retriever.py            # Unit tests for retrieval & scoring (9 tests)
+│   ├── test_retriever.py            # Unit tests for retrieval & scoring (9 tests)
+│   ├── test_tavily.py               # Unit tests for Tavily search & domain filtering (9 tests)
+│   └── test_vision.py               # Unit tests for NVIDIA vision describer (9 tests)
 ├── sample_materials/                # Curated lecture notes & Kepler sample
 ├── .env.example                     # Sample environment variable configuration
 ├── .gitignore                       # Ignored files (virtualenvs, cache, db, node_modules)
@@ -450,7 +465,7 @@ npm run dev
 
 ### 6.6 Running the Test Suite
 
-Execute the full suite of unit and integration tests (119 tests passing):
+Execute the full suite of unit and integration tests (143 tests passing):
 
 ```bash
 python -m pytest tests/ -v
@@ -491,7 +506,7 @@ This project is built to satisfy the core evaluation criteria of the **Nebius x 
 | :--- | :--- |
 | **NVIDIA Technology Utilization** | • NVIDIA NIM `nvidia/llama-nemotron-embed-vl-1b-v2` for state-of-the-art embedding retrieval.<br/>• NVIDIA NIM `meta/llama-3.2-11b-vision-instruct` for query enhancement and grounded reasoning.<br/>• Prepared integration for NVIDIA NeMo Reranker (`nvidia/reranking-nemotron-4b`). |
 | **Nebius AI Studio Integration** | • Seamless resilient dual-provider fallback architecture leveraging Nebius Token Factory.<br/>• High-throughput inference for large-scale document synthesis (`nvidia/Llama-3.1-Nemotron-70B-Instruct-HF`). |
-| **Technical Depth & Engineering Rigor** | • Complete separation of concerns (ETL, Vector Indexing, Query Augmentation, Generation).<br/>• Idempotent chunking with SHA-256 deterministic IDs, eliminating ghost chunks.<br/>• 12 automated test suites (119 passing tests) with GitHub Actions CI pipeline and quantitative empirical benchmark suite. |
+| **Technical Depth & Engineering Rigor** | • Complete separation of concerns (ETL, Vector Indexing, Query Augmentation, Generation).<br/>• Idempotent chunking with SHA-256 deterministic IDs, eliminating ghost chunks.<br/>• 14 automated test suites (143 passing tests) with GitHub Actions CI pipeline and quantitative empirical benchmark suite. |
 | **Real-World Impact & Feasibility** | • Solves a tangible, daily problem for thousands of university students and faculty.<br/>• Strict zero-hallucination guardrails and auditable page-level citations. |
 
 ---
