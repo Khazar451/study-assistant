@@ -33,7 +33,7 @@ class IngestionPipeline:
         chunker: Optional[Union[DocumentChunker, Callable]] = None,
         embedder: Optional[NvidiaEmbedder] = None,
         indexer: Optional[ChromaIndexer] = None,
-        batch_size: int = 32,
+        batch_size: int = 64,
     ):
         self.loader = loader or DocumentLoader()
         self.chunker = chunker or DocumentChunker()
@@ -51,6 +51,7 @@ class IngestionPipeline:
         file_path: Union[str, Path],
         chunk_size: Optional[int] = None,
         chunk_overlap: Optional[int] = None,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
     ) -> Dict[str, Any]:
         """Ingest a single document into the vector database.
 
@@ -78,7 +79,13 @@ class IngestionPipeline:
             chunks = chunk_documents(raw_docs)
 
         if not chunks:
+            if progress_callback:
+                progress_callback(0, 0)
             return {"source": path.name, "chunks_count": 0, "status": "empty"}
+
+        total_chunks = len(chunks)
+        if progress_callback:
+            progress_callback(0, total_chunks)
 
         # Eliminate ghost chunks by removing prior entries for this file
         if hasattr(self.indexer, "delete_by_path"):
@@ -94,7 +101,8 @@ class IngestionPipeline:
             chunk.metadata = {k: v for k, v in chunk.metadata.items() if v is not None}
 
         # Embed and index in safe batch sizes
-        for i in range(0, len(chunks), self.batch_size):
+        processed = 0
+        for i in range(0, total_chunks, self.batch_size):
             batch = chunks[i : i + self.batch_size]
             texts = [c.page_content for c in batch]
 
@@ -117,6 +125,10 @@ class IngestionPipeline:
                 )
             else:
                 self.indexer.add_chunks(batch)
+
+            processed += len(batch)
+            if progress_callback:
+                progress_callback(processed, total_chunks)
 
         return {
             "source": path.name,

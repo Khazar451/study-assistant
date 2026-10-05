@@ -174,3 +174,34 @@ def test_api_ask_with_web_flag(client, mock_assistant):
         use_web=True,
         fallback_to_web=True,
     )
+
+
+def test_api_ingest_file_background(client, mock_assistant):
+    file_content = b"# Background Ingestion\nTesting background job execution."
+    files = {"file": ("async_doc.txt", file_content, "text/plain")}
+    res = client.post("/api/ingest/file?background=true", files=files)
+    assert res.status_code == 200
+    data = res.json()
+    assert data["success"] is True
+    assert "job_id" in data
+    assert data["status"] == "processing"
+    assert data["filename"] == "async_doc.txt"
+
+    job_id = data["job_id"]
+    status_res = client.get(f"/api/ingest/status/{job_id}")
+    assert status_res.status_code == 200
+    status_data = status_res.json()
+    assert status_data["job_id"] == job_id
+    assert status_data["filename"] == "async_doc.txt"
+
+    jobs_res = client.get("/api/ingest/jobs")
+    assert jobs_res.status_code == 200
+    jobs_data = jobs_res.json()
+    assert "jobs" in jobs_data
+    assert any(j["job_id"] == job_id for j in jobs_data["jobs"])
+
+
+def test_api_ingest_status_not_found(client, mock_assistant):
+    res = client.get("/api/ingest/status/non-existent-job-id")
+    assert res.status_code == 404
+

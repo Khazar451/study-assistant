@@ -6,10 +6,12 @@ from pathlib import Path
 import re
 import time
 from typing import Any, Dict, Iterator, List, Optional
+import uuid
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, Query, Response, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 
@@ -309,9 +311,57 @@ def get_documents() -> Dict[str, Any]:
         }
 
 
+# Ingestion Job Tracker
+ingestion_jobs: Dict[str, Dict[str, Any]] = {}
+
+
+def _run_ingestion_worker(job_id: str, target_path: Path, filename: str) -> None:
+    """Worker task executed in a background thread."""
+    assistant = get_assistant()
+    try:
+        def on_progress(processed: int, total: int) -> None:
+            if job_id in ingestion_jobs:
+                ingestion_jobs[job_id]["processed_chunks"] = processed
+                ingestion_jobs[job_id]["total_chunks"] = total
+                ingestion_jobs[job_id]["progress"] = int((processed / total) * 100) if total > 0 else 0
+                ingestion_jobs[job_id]["updated_at"] = time.time()
+
+        if hasattr(assistant, "ingest"):
+            import inspect
+            sig = inspect.signature(assistant.ingest)
+            if "progress_callback" in sig.parameters:
+                result = assistant.ingest(target_path, progress_callback=on_progress)
+            else:
+                result = assistant.ingest(target_path)
+        else:
+            result = {"status": "success", "file": filename}
+
+        if job_id in ingestion_jobs:
+            ingestion_jobs[job_id]["status"] = "completed"
+            ingestion_jobs[job_id]["progress"] = 100
+            ingestion_jobs[job_id]["result"] = result
+            ingestion_jobs[job_id]["completed_at"] = time.time()
+            ingestion_jobs[job_id]["total_indexed_chunks"] = (
+                assistant.count() if hasattr(assistant, "count") else 0
+            )
+    except Exception as e:
+        if job_id in ingestion_jobs:
+            ingestion_jobs[job_id]["status"] = "failed"
+            ingestion_jobs[job_id]["error"] = str(e)
+            ingestion_jobs[job_id]["completed_at"] = time.time()
+
+
 @app.post("/api/ingest/file")
-async def ingest_file(file: UploadFile = File(...)) -> Dict[str, Any]:
-    """Upload and ingest a course file (PDF, TXT, MD) into the vector store."""
+async def ingest_file(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    background: bool = Query(False),
+) -> Dict[str, Any]:
+    """Upload and ingest a course file (PDF, TXT, MD) into the vector store.
+
+    If background=True, starts a background ingestion job and returns job_id immediately.
+    If background=False, processes ingestion synchronously in worker threadpool without blocking asyncio loop.
+    """
     allowed_exts = {".pdf", ".txt", ".md"}
     filename = file.filename or "upload.txt"
     ext = Path(filename).suffix.lower()
@@ -330,17 +380,76 @@ async def ingest_file(file: UploadFile = File(...)) -> Dict[str, Any]:
     with open(target_path, "wb") as f:
         f.write(content)
 
+    job_id = str(uuid.uuid4())
+    ingestion_jobs[job_id] = {
+        "job_id": job_id,
+        "filename": filename,
+        "status": "processing",
+        "progress": 0,
+        "processed_chunks": 0,
+        "total_chunks": 0,
+        "result": None,
+        "error": None,
+        "started_at": time.time(),
+        "completed_at": None,
+    }
+
     assistant = get_assistant()
-    try:
-        result = assistant.ingest(target_path)
+
+    if background:
+        background_tasks.add_task(_run_ingestion_worker, job_id, target_path, filename)
         return {
             "success": True,
+            "job_id": job_id,
+            "status": "processing",
+            "filename": filename,
+            "total_indexed_chunks": assistant.count() if hasattr(assistant, "count") else 0,
+        }
+
+    try:
+        def on_progress(processed: int, total: int) -> None:
+            if job_id in ingestion_jobs:
+                ingestion_jobs[job_id]["processed_chunks"] = processed
+                ingestion_jobs[job_id]["total_chunks"] = total
+                ingestion_jobs[job_id]["progress"] = int((processed / total) * 100) if total > 0 else 0
+                ingestion_jobs[job_id]["updated_at"] = time.time()
+
+        import inspect
+        sig = inspect.signature(assistant.ingest)
+        if "progress_callback" in sig.parameters:
+            result = await run_in_threadpool(assistant.ingest, target_path, progress_callback=on_progress)
+        else:
+            result = await run_in_threadpool(assistant.ingest, target_path)
+
+        ingestion_jobs[job_id]["status"] = "completed"
+        ingestion_jobs[job_id]["progress"] = 100
+        ingestion_jobs[job_id]["result"] = result
+        ingestion_jobs[job_id]["completed_at"] = time.time()
+        return {
+            "success": True,
+            "job_id": job_id,
             "filename": filename,
             "result": result,
-            "total_indexed_chunks": assistant.count(),
+            "total_indexed_chunks": assistant.count() if hasattr(assistant, "count") else 0,
         }
     except Exception as e:
+        ingestion_jobs[job_id]["status"] = "failed"
+        ingestion_jobs[job_id]["error"] = str(e)
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {str(e)}")
+
+
+@app.get("/api/ingest/status/{job_id}")
+def get_ingestion_status(job_id: str) -> Dict[str, Any]:
+    """Retrieve real-time progress and completion status for an ingestion job."""
+    if job_id not in ingestion_jobs:
+        raise HTTPException(status_code=404, detail=f"Ingestion job '{job_id}' not found.")
+    return ingestion_jobs[job_id]
+
+
+@app.get("/api/ingest/jobs")
+def list_ingestion_jobs() -> Dict[str, Any]:
+    """List recent ingestion jobs."""
+    return {"jobs": list(ingestion_jobs.values())[-25:]}
 
 
 @app.post("/api/ingest/sample")

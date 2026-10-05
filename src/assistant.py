@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 import sys
 import time
-from typing import Any, Dict, Iterator, List, Optional, Union
+from typing import Any, Callable, Dict, Iterator, List, Optional, Union
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -77,12 +77,18 @@ class StudyAssistant:
         # 5. Coordinate Tavily Search Client
         self.tavily = tavily or TavilySearchClient()
 
-    def ingest(self, path: Union[str, Path], batch_size: int = 32) -> Dict[str, Any]:
+    def ingest(
+        self,
+        path: Union[str, Path],
+        batch_size: int = 64,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> Dict[str, Any]:
         """Ingest a single document or an entire directory of course materials.
 
         Args:
             path: File or directory path to ingest.
             batch_size: Embedding batch size.
+            progress_callback: Optional callback reporting (processed_chunks, total_chunks).
 
         Returns:
             Dictionary detailing ingestion summary.
@@ -101,6 +107,8 @@ class StudyAssistant:
                 "details": res,
             }
         else:
+            if progress_callback is not None:
+                return self.pipeline.ingest_file(target, progress_callback=progress_callback)
             return self.pipeline.ingest_file(target)
 
     def search(

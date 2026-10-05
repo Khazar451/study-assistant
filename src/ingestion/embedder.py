@@ -1,4 +1,5 @@
 import os
+import time
 from typing import Any, List, Optional, Union
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -55,7 +56,9 @@ class NvidiaEmbedder:
         self,
         texts: List[str],
         input_type: str = "passage",
-        batch_size: int = 32,
+        batch_size: int = 64,
+        max_retries: int = 3,
+        truncate: str = "NONE",
     ) -> List[List[float]]:
         if not texts:
             return []
@@ -63,17 +66,27 @@ class NvidiaEmbedder:
         all_embeddings: List[List[float]] = []
         for i in range(0, len(texts), batch_size):
             batch = texts[i : i + batch_size]
-            response = self.client.embeddings.create(
-                model=self.model,
-                input=batch,
-                encoding_format="float",
-                extra_body={"input_type": input_type, "truncate": "NONE"},
-            )
-            all_embeddings.extend([item.embedding for item in response.data])
+            last_err = None
+            for attempt in range(max_retries):
+                try:
+                    response = self.client.embeddings.create(
+                        model=self.model,
+                        input=batch,
+                        encoding_format="float",
+                        extra_body={"input_type": input_type, "truncate": truncate},
+                    )
+                    all_embeddings.extend([item.embedding for item in response.data])
+                    break
+                except Exception as e:
+                    last_err = e
+                    if attempt < max_retries - 1:
+                        time.sleep(0.8 * (2 ** attempt))
+                    else:
+                        raise last_err
 
         return all_embeddings
 
-    def embed_documents(self, texts: List[str], batch_size: int = 32) -> List[List[float]]:
+    def embed_documents(self, texts: List[str], batch_size: int = 64) -> List[List[float]]:
         """Generate embeddings for documents with input_type='passage' (LangChain naming convention)."""
         return self.embed_batch(texts, input_type="passage", batch_size=batch_size)
 
@@ -81,7 +94,7 @@ class NvidiaEmbedder:
         self,
         chunks: List[Union[dict, Any]],
         input_type: str = "passage",
-        batch_size: int = 32,
+        batch_size: int = 64,
     ) -> List[Union[dict, Any]]:
         if not chunks:
             return []

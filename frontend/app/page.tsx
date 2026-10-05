@@ -219,7 +219,7 @@ export default function StudyAssistantApp() {
   // Materials state
   const [documents, setDocuments] = useState<DocItem[]>([]);
   const [isUploading, setIsUploading] = useState(false);
-  const [uploadMessage, setUploadMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const [uploadMessage, setUploadMessage] = useState<{ type: "success" | "error" | "info"; text: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Flashcards state
@@ -422,34 +422,89 @@ export default function StudyAssistantApp() {
     if (!file) return;
 
     setIsUploading(true);
-    setUploadMessage(null);
+    setUploadMessage({
+      type: "info",
+      text: `Uploading '${file.name}' to server...`,
+    });
 
     const formData = new FormData();
     formData.append("file", file);
 
     try {
-      const res = await fetch("/api/ingest/file", {
+      const res = await fetch("/api/ingest/file?background=true", {
         method: "POST",
         body: formData,
       });
-      const data = await res.json();
-      if (res.ok) {
+
+      const contentType = res.headers.get("content-type") || "";
+      let data: any = {};
+      if (contentType.includes("application/json")) {
+        data = await res.json();
+      } else {
+        const rawText = await res.text();
+        throw new Error(rawText || `Server returned status ${res.status}`);
+      }
+
+      if (!res.ok) {
+        throw new Error(data.detail || `Upload failed with status ${res.status}`);
+      }
+
+      if (data.job_id) {
+        let isDone = false;
+        let pollCount = 0;
+        const maxPolls = 600; // 10 minutes timeout at 1s intervals
+
+        while (!isDone && pollCount < maxPolls) {
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          pollCount++;
+
+          try {
+            const statusRes = await fetch(`/api/ingest/status/${data.job_id}`);
+            const statusContentType = statusRes.headers.get("content-type") || "";
+            if (statusRes.ok && statusContentType.includes("application/json")) {
+              const job = await statusRes.json();
+              if (job.status === "processing") {
+                const progressInfo = job.total_chunks > 0
+                  ? `${job.progress}% (${job.processed_chunks}/${job.total_chunks} chunks)`
+                  : "extracting pages...";
+                setUploadMessage({
+                  type: "info",
+                  text: `Ingesting '${file.name}' (${progressInfo})...`,
+                });
+              } else if (job.status === "completed") {
+                isDone = true;
+                const count = job.result?.chunks_count ?? job.total_chunks ?? "all";
+                setUploadMessage({
+                  type: "success",
+                  text: `Successfully ingested '${file.name}' (${count} chunks indexed)`,
+                });
+                fetchDocuments();
+                fetchStatus();
+                break;
+              } else if (job.status === "failed") {
+                isDone = true;
+                throw new Error(job.error || "Background ingestion failed.");
+              }
+            }
+          } catch (pollErr: any) {
+            if (pollErr.message && !pollErr.message.includes("fetch")) {
+              throw pollErr;
+            }
+          }
+        }
+      } else {
+        const count = data.result?.chunks_count ?? data.total_indexed_chunks ?? "all";
         setUploadMessage({
           type: "success",
-          text: `Successfully ingested '${file.name}' (${data.result?.chunks_created || "new"} chunks indexed)`,
+          text: `Successfully ingested '${file.name}' (${count} chunks indexed)`,
         });
         fetchDocuments();
         fetchStatus();
-      } else {
-        setUploadMessage({
-          type: "error",
-          text: `Ingestion error: ${data.detail || "Upload failed"}`,
-        });
       }
     } catch (err: any) {
       setUploadMessage({
         type: "error",
-        text: `Ingestion failed: ${err.message}`,
+        text: `Ingestion error: ${err.message}`,
       });
     } finally {
       setIsUploading(false);
@@ -460,10 +515,21 @@ export default function StudyAssistantApp() {
   // Ingest sample Kepler astronomy document
   const handleIngestSample = async () => {
     setIsUploading(true);
-    setUploadMessage(null);
+    setUploadMessage({
+      type: "info",
+      text: "Ingesting Kepler's Planetary Laws sample material...",
+    });
     try {
       const res = await fetch("/api/ingest/sample", { method: "POST" });
-      const data = await res.json();
+      const contentType = res.headers.get("content-type") || "";
+      let data: any = {};
+      if (contentType.includes("application/json")) {
+        data = await res.json();
+      } else {
+        const text = await res.text();
+        throw new Error(text || `Server returned status ${res.status}`);
+      }
+
       if (res.ok) {
         setUploadMessage({
           type: "success",
@@ -480,7 +546,7 @@ export default function StudyAssistantApp() {
     } catch (err: any) {
       setUploadMessage({
         type: "error",
-        text: `Failed to ingest sample: ${err.message}`,
+        text: `Sample ingestion failed: ${err.message}`,
       });
     } finally {
       setIsUploading(false);
@@ -808,14 +874,45 @@ export default function StudyAssistantApp() {
                   padding: "12px 16px",
                   borderRadius: "8px",
                   marginBottom: "16px",
-                  background: uploadMessage.type === "success" ? "var(--accent-success-subtle)" : "var(--accent-danger-subtle)",
-                  border: `1px solid ${uploadMessage.type === "success" ? "var(--accent-success-border)" : "var(--accent-danger-border)"}`,
-                  color: uploadMessage.type === "success" ? "var(--accent-success)" : "var(--accent-danger)",
+                  background:
+                    uploadMessage.type === "success"
+                      ? "var(--accent-success-subtle)"
+                      : uploadMessage.type === "info"
+                      ? "rgba(99, 102, 241, 0.12)"
+                      : "var(--accent-danger-subtle)",
+                  border: `1px solid ${
+                    uploadMessage.type === "success"
+                      ? "var(--accent-success-border)"
+                      : uploadMessage.type === "info"
+                      ? "rgba(99, 102, 241, 0.35)"
+                      : "var(--accent-danger-border)"
+                  }`,
+                  color:
+                    uploadMessage.type === "success"
+                      ? "var(--accent-success)"
+                      : uploadMessage.type === "info"
+                      ? "#6366f1"
+                      : "var(--accent-danger)",
                   fontSize: "13px",
                   fontWeight: 500,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "10px",
                 }}
               >
-                {uploadMessage.text}
+                {uploadMessage.type === "info" && (
+                  <span
+                    style={{
+                      width: "8px",
+                      height: "8px",
+                      borderRadius: "50%",
+                      backgroundColor: "#6366f1",
+                      display: "inline-block",
+                      animation: "pulse 1.5s infinite",
+                    }}
+                  />
+                )}
+                <span>{uploadMessage.text}</span>
               </div>
             )}
 
