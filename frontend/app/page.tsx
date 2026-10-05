@@ -157,6 +157,8 @@ interface DocItem {
   file_path: string;
   chunk_count: number;
   page_count: number;
+  has_visuals?: boolean;
+  visual_count?: number;
 }
 
 interface Flashcard {
@@ -924,7 +926,7 @@ export default function StudyAssistantApp() {
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".pdf,.txt,.md"
+                accept=".pdf,.txt,.md,.png,.jpg,.jpeg"
                 style={{ display: "none" }}
                 onChange={handleFileUpload}
               />
@@ -935,7 +937,7 @@ export default function StudyAssistantApp() {
                 {isUploading ? "Processing document chunks..." : "Click or drag course files here"}
               </div>
               <div className="dropzone-sub">
-                Supported: PDF lecture slides, TXT transcripts, and Markdown notes
+                Supported: PDF lecture slides, diagrams (.png, .jpg), TXT transcripts, and Markdown notes
               </div>
             </div>
 
@@ -963,6 +965,21 @@ export default function StudyAssistantApp() {
                       </div>
                     </div>
                     <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                      {doc.has_visuals && (
+                        <span
+                          style={{
+                            fontSize: "11px",
+                            fontWeight: 600,
+                            padding: "2px 8px",
+                            borderRadius: "4px",
+                            background: "rgba(99, 102, 241, 0.15)",
+                            color: "#6366f1",
+                            border: "1px solid rgba(99, 102, 241, 0.3)",
+                          }}
+                        >
+                          {doc.visual_count ? `${doc.visual_count} Diagram(s)` : "Diagrams"}
+                        </span>
+                      )}
                       <span className="doc-badge-pill">{doc.page_count} page(s)</span>
                       <span className="doc-badge-pill" style={{ color: "var(--accent-success)" }}>
                         Indexed
@@ -1117,9 +1134,26 @@ export default function StudyAssistantApp() {
               </button>
             </div>
 
-            <div style={{ marginBottom: "12px", fontSize: "12.5px", color: "var(--accent-primary)" }}>
-              Document: {selectedCitation.source || selectedCitation.metadata?.source || "Unknown"}
-              {selectedCitation.page && ` · Page ${selectedCitation.page}`}
+            <div style={{ marginBottom: "12px", fontSize: "12.5px", color: "var(--accent-primary)", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "6px" }}>
+              <span>
+                Document: {selectedCitation.source || selectedCitation.metadata?.source || "Unknown"}
+                {selectedCitation.page && ` · Page ${selectedCitation.page}`}
+              </span>
+              {(selectedCitation.metadata?.has_visuals || (selectedCitation.preview || selectedCitation.text || "").includes("[Visual Diagram") || (selectedCitation.preview || selectedCitation.text || "").includes("[Lecture Slide")) && (
+                <span
+                  style={{
+                    fontSize: "11px",
+                    fontWeight: 600,
+                    padding: "2px 8px",
+                    borderRadius: "4px",
+                    background: "rgba(99, 102, 241, 0.15)",
+                    color: "#6366f1",
+                    border: "1px solid rgba(99, 102, 241, 0.3)",
+                  }}
+                >
+                  Diagram / Visual Context
+                </span>
+              )}
             </div>
 
             <div

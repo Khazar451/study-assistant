@@ -123,6 +123,16 @@ def test_api_ingest_file_invalid_ext(client, mock_assistant):
     assert "Unsupported file format" in res.json()["detail"]
 
 
+def test_api_ingest_image_file(client, mock_assistant):
+    image_bytes = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+    files = {"file": ("slide_architecture.png", image_bytes, "image/png")}
+    res = client.post("/api/ingest/file", files=files)
+    assert res.status_code == 200
+    data = res.json()
+    assert data["success"] is True
+    assert data["filename"] == "slide_architecture.png"
+
+
 def test_api_ingest_sample(client, mock_assistant):
     res = client.post("/api/ingest/sample")
     assert res.status_code == 200

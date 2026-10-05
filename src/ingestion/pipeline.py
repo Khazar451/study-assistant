@@ -34,8 +34,14 @@ class IngestionPipeline:
         embedder: Optional[NvidiaEmbedder] = None,
         indexer: Optional[ChromaIndexer] = None,
         batch_size: int = 64,
+        vision_describer: Optional[Any] = None,
     ):
-        self.loader = loader or DocumentLoader()
+        if loader is not None:
+            self.loader = loader
+        elif vision_describer is not None:
+            self.loader = DocumentLoader(vision_describer=vision_describer)
+        else:
+            self.loader = DocumentLoader()
         self.chunker = chunker or DocumentChunker()
         self.embedder = embedder or NvidiaEmbedder()
         self.indexer = indexer or ChromaIndexer()

@@ -283,10 +283,15 @@ def get_documents() -> Dict[str, Any]:
                     "file_path": m.get("file_path", src),
                     "chunk_count": 0,
                     "pages": set(),
+                    "has_visuals": False,
+                    "visual_count": 0,
                 }
             doc_map[src]["chunk_count"] += 1
             if page is not None:
                 doc_map[src]["pages"].add(page)
+            if m.get("has_visuals"):
+                doc_map[src]["has_visuals"] = True
+                doc_map[src]["visual_count"] += int(m.get("visual_count", 1))
 
         doc_list = []
         for src, d in doc_map.items():
@@ -295,6 +300,8 @@ def get_documents() -> Dict[str, Any]:
                 "file_path": d["file_path"],
                 "chunk_count": d["chunk_count"],
                 "page_count": len(d["pages"]) if d["pages"] else 1,
+                "has_visuals": d["has_visuals"],
+                "visual_count": d["visual_count"],
             })
 
         return {
@@ -357,19 +364,19 @@ async def ingest_file(
     file: UploadFile = File(...),
     background: bool = Query(False),
 ) -> Dict[str, Any]:
-    """Upload and ingest a course file (PDF, TXT, MD) into the vector store.
+    """Upload and ingest a course file (PDF, TXT, MD, PNG, JPG, JPEG) into the vector store.
 
     If background=True, starts a background ingestion job and returns job_id immediately.
     If background=False, processes ingestion synchronously in worker threadpool without blocking asyncio loop.
     """
-    allowed_exts = {".pdf", ".txt", ".md"}
+    allowed_exts = {".pdf", ".txt", ".md", ".png", ".jpg", ".jpeg"}
     filename = file.filename or "upload.txt"
     ext = Path(filename).suffix.lower()
 
     if ext not in allowed_exts:
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported file format '{ext}'. Supported formats: {', '.join(allowed_exts)}",
+            detail=f"Unsupported file format '{ext}'. Supported formats: {', '.join(sorted(allowed_exts))}",
         )
 
     upload_dir = Path("./data/uploads").resolve()

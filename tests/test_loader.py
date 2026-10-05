@@ -70,3 +70,48 @@ def test_load_pdf_file_multipage(tmp_path):
     assert docs[0].metadata["file_type"] == "pdf"
     assert docs[0].metadata["source"] == "sample_multipage.pdf"
     assert docs[0].metadata["file_path"] == str(pdf_path.resolve())
+
+
+def test_load_png_image(tmp_path):
+    from PIL import Image
+    from unittest.mock import MagicMock
+    from src.ingestion.vision import VisionDescriber
+
+    img_path = tmp_path / "system_architecture.png"
+    Image.new("RGB", (300, 300), color="blue").save(img_path)
+
+    mock_vision = MagicMock(spec=VisionDescriber)
+    mock_vision.describe_diagram.return_value = "System Architecture: Microservices connected via Kafka."
+
+    loader = DocumentLoader(vision_describer=mock_vision)
+    docs = loader.load(img_path)
+
+    assert len(docs) == 1
+    assert "System Architecture" in docs[0].page_content
+    assert docs[0].metadata["source"] == "system_architecture.png"
+    assert docs[0].metadata["file_type"] == "image"
+    assert docs[0].metadata["page"] == 1
+    assert docs[0].metadata["has_visuals"] is True
+    assert docs[0].metadata["visual_count"] == 1
+
+
+def test_load_pdf_with_visual_diagram(tmp_path):
+    from unittest.mock import MagicMock
+    from src.ingestion.vision import VisionDescriber
+
+    pdf_path = tmp_path / "lecture_with_slide.pdf"
+    writer = PdfWriter()
+    writer.add_blank_page(width=72, height=72)
+    with open(pdf_path, "wb") as f:
+        writer.write(f)
+
+    mock_vision = MagicMock(spec=VisionDescriber)
+    mock_vision.is_meaningful_diagram.return_value = True
+    mock_vision.describe_diagram.return_value = "Confusion Matrix with precision 94%."
+
+    loader = DocumentLoader(vision_describer=mock_vision, extract_visuals=True)
+    docs = loader.load(pdf_path)
+
+    assert len(docs) == 1
+    assert docs[0].metadata["file_type"] == "pdf"
+
