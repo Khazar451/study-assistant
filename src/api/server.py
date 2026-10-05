@@ -7,10 +7,11 @@ import re
 import time
 from typing import Any, Dict, Iterator, List, Optional
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 
 from src.assistant import StudyAssistant
 
@@ -31,6 +32,27 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+)
+
+# --- Prometheus Metrics Definitions ---
+HTTP_REQUESTS_TOTAL = Counter(
+    "http_requests_total",
+    "Total HTTP requests handled by Study Assistant",
+    ["method", "endpoint", "status_code"],
+)
+HTTP_REQUEST_DURATION_SECONDS = Histogram(
+    "http_request_duration_seconds",
+    "HTTP request latency in seconds",
+    ["endpoint"],
+)
+RAG_INDEXED_CHUNKS = Gauge(
+    "rag_indexed_chunks_total",
+    "Total document chunks currently persisted in vector store",
+)
+RAG_QUERIES_TOTAL = Counter(
+    "rag_queries_total",
+    "Total student academic queries processed",
+    ["mode", "use_web"],
 )
 
 # Global singleton instance
@@ -168,6 +190,8 @@ class AskRequest(BaseModel):
     augment_mode: str = Field("expand", description="Strategy: expand, rewrite, or hyde")
     min_similarity: Optional[float] = Field(None, description="Optional minimum cosine similarity")
     min_rerank_score: Optional[float] = Field(None, description="Optional minimum reranker threshold")
+    use_web: bool = Field(False, description="Enable Tavily web search integration")
+    fallback_to_web: bool = Field(True, description="Fallback to web search if local context is insufficient")
 
 
 class SearchRequest(BaseModel):
@@ -176,6 +200,7 @@ class SearchRequest(BaseModel):
     top_n: int = Field(5, ge=1, le=20)
     augment: bool = Field(True)
     augment_mode: str = Field("expand")
+    use_web: bool = Field(False)
 
 
 class IngestPathRequest(BaseModel):
@@ -198,6 +223,17 @@ class FlashcardsRequest(BaseModel):
 
 
 # --- API Routes ---
+
+
+@app.get("/metrics")
+def get_metrics() -> Response:
+    """Prometheus exposition endpoint for system and RAG observability."""
+    try:
+        assistant = get_assistant()
+        RAG_INDEXED_CHUNKS.set(assistant.count())
+    except Exception:
+        pass
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.get("/api/status")
@@ -330,6 +366,8 @@ def ask_question(req: AskRequest) -> Dict[str, Any]:
     assistant = get_assistant()
     start_time = time.time()
 
+    RAG_QUERIES_TOTAL.labels(mode=req.augment_mode, use_web=str(req.use_web).lower()).inc()
+
     res = assistant.ask(
         query=req.query,
         stream=False,
@@ -339,6 +377,8 @@ def ask_question(req: AskRequest) -> Dict[str, Any]:
         augment_mode=req.augment_mode,
         min_similarity=req.min_similarity,
         min_rerank_score=req.min_rerank_score,
+        use_web=req.use_web,
+        fallback_to_web=req.fallback_to_web,
     )
 
     duration_ms = round((time.time() - start_time) * 1000, 1)
@@ -359,6 +399,7 @@ def search_documents(req: SearchRequest) -> Dict[str, Any]:
         top_n=req.top_n,
         augment=req.augment,
         augment_mode=req.augment_mode,
+        use_web=req.use_web,
     )
     return {
         "query": req.query,
@@ -374,6 +415,8 @@ def ask_stream(
     top_n: int = Query(5, ge=1, le=20),
     augment: bool = Query(True),
     augment_mode: str = Query("expand"),
+    use_web: bool = Query(False),
+    fallback_to_web: bool = Query(True),
 ):
     """Server-Sent Events (SSE) token-by-token streaming endpoint for real-time typewriter UI."""
     assistant = get_assistant()
@@ -387,6 +430,27 @@ def ask_stream(
                 return
 
             if assistant.count() == 0:
+                if (use_web or fallback_to_web) and getattr(assistant, 'tavily', None) and assistant.tavily.is_available:
+                    chunks = assistant.tavily.search(query=query.strip(), max_results=top_n)
+                    if chunks:
+                        chunk_previews = [
+                            {
+                                "source": c.get("metadata", {}).get("source", "Unknown"),
+                                "page": c.get("metadata", {}).get("page", 1),
+                                "score": c.get("similarity_score", 0.0),
+                                "preview": c.get("text", "")[:180] + "...",
+                            }
+                            for c in chunks
+                        ]
+                        yield f"data: {json.dumps({'type': 'chunks', 'chunks': chunk_previews})}\n\n"
+                        context = assistant.retriever.format_context(chunks)
+                        stream = assistant.generator.generate_stream(query=query.strip(), context=context)
+                        for token in stream:
+                            yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
+                        sources = [c.get("metadata", {}).get("source", "web") for c in chunks]
+                        yield f"data: {json.dumps({'type': 'done', 'sources': sources})}\n\n"
+                        return
+
                 yield f"data: {json.dumps({'type': 'token', 'token': 'Vector database is empty. Please ingest course materials first.'})}\n\n"
                 yield f"data: {json.dumps({'type': 'done', 'sources': []})}\n\n"
                 return
@@ -398,7 +462,14 @@ def ask_stream(
                 top_n=top_n,
                 augment=augment,
                 augment_mode=augment_mode,
+                use_web=use_web,
             )
+
+            # Fallback to Tavily if local search returned no relevant chunks and fallback_to_web is enabled
+            if not chunks and fallback_to_web and not use_web and getattr(assistant, 'tavily', None) and assistant.tavily.is_available:
+                web_chunks = assistant.tavily.search(query=query.strip(), max_results=top_n)
+                if web_chunks:
+                    chunks = assistant.reranker.rerank(query=query.strip(), chunks=web_chunks, top_n=top_n)
 
             # Send candidate chunks event
             chunk_previews = [

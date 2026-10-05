@@ -114,9 +114,13 @@ class StudyGenerator:
             metadata = chunk.get("metadata", {})
             source = metadata.get("source", "Unknown Source")
             page = metadata.get("page", 1)
+            source_type = metadata.get("source_type", "document")
             text = chunk.get("text", chunk.get("page_content", "")).strip()
 
-            block = f"[Document {idx}] (Source: {source} | Page: {page})\n{text}"
+            if source_type == "web":
+                block = f"[Document {idx}] (Web Source: {source})\n{text}"
+            else:
+                block = f"[Document {idx}] (Source: {source} | Page: {page})\n{text}"
             context_blocks.append(block)
 
         return "\n\n---\n\n".join(context_blocks)

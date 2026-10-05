@@ -147,3 +147,30 @@ def test_api_flashcards(client, mock_assistant):
     data = res.json()
     assert "flashcards" in data
     assert len(data["flashcards"]) > 0
+
+
+def test_api_metrics(client, mock_assistant):
+    res = client.get("/metrics")
+    assert res.status_code == 200
+    assert "text/plain" in res.headers["content-type"]
+    text = res.text
+    assert "rag_indexed_chunks_total" in text
+    assert "rag_queries_total" in text
+
+
+def test_api_ask_with_web_flag(client, mock_assistant):
+    payload = {"query": "What is dark matter?", "use_web": True}
+    res = client.post("/api/ask", json=payload)
+    assert res.status_code == 200
+    mock_assistant.ask.assert_called_with(
+        query="What is dark matter?",
+        stream=False,
+        top_k=15,
+        top_n=5,
+        augment=True,
+        augment_mode="expand",
+        min_similarity=None,
+        min_rerank_score=None,
+        use_web=True,
+        fallback_to_web=True,
+    )

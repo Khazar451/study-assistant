@@ -16,6 +16,7 @@ from src.ingestion.pipeline import IngestionPipeline
 from src.retrieval.query_augmenter import QueryAugmenter
 from src.retrieval.reranker import StudyReranker
 from src.retrieval.retriever import StudyRetriever
+from src.retrieval.tavily_search import TavilySearchClient
 from src.generation.generator import StudyGenerator
 
 
@@ -28,6 +29,7 @@ class StudyAssistant:
     3. Dense Vector Retrieval (Cosine Similarity & Max-Score Pooling via StudyRetriever)
     4. Cross-Attention Semantic Reranking (via StudyReranker)
     5. Grounded Answer Generation (Grounded Citations via StudyGenerator)
+    6. Real-Time Web Search & Grounding (via TavilySearchClient)
     """
 
     def __init__(
@@ -36,6 +38,7 @@ class StudyAssistant:
         retriever: Optional[StudyRetriever] = None,
         reranker: Optional[StudyReranker] = None,
         generator: Optional[StudyGenerator] = None,
+        tavily: Optional[TavilySearchClient] = None,
         persist_directory: str = "./chroma_db",
     ):
         """Initialize the StudyAssistant with shared or injected subcomponents."""
@@ -70,6 +73,9 @@ class StudyAssistant:
 
         # 4. Coordinate Generator
         self.generator = generator or StudyGenerator()
+
+        # 5. Coordinate Tavily Search Client
+        self.tavily = tavily or TavilySearchClient()
 
     def ingest(self, path: Union[str, Path], batch_size: int = 32) -> Dict[str, Any]:
         """Ingest a single document or an entire directory of course materials.
@@ -106,6 +112,7 @@ class StudyAssistant:
         augment_mode: str = "expand",
         min_similarity: Optional[float] = None,
         min_rerank_score: Optional[float] = None,
+        use_web: bool = False,
     ) -> List[Dict[str, Any]]:
         """Retrieve and rerank candidate document chunks without generating an answer.
 
@@ -123,10 +130,15 @@ class StudyAssistant:
             augment_mode=augment_mode,
         )
 
+        # 2. Optionally augment with Tavily web search
+        if use_web and self.tavily and self.tavily.is_available:
+            web_candidates = self.tavily.search(query=query.strip(), max_results=top_n)
+            candidates = list(candidates) + web_candidates
+
         if not candidates:
             return []
 
-        # 2. Rerank candidates with cross-attention scoring
+        # 3. Rerank candidates with cross-attention scoring
         reranked = self.reranker.rerank(
             query=query.strip(),
             chunks=candidates,
@@ -146,6 +158,8 @@ class StudyAssistant:
         augment_mode: str = "expand",
         min_similarity: Optional[float] = None,
         min_rerank_score: Optional[float] = None,
+        use_web: bool = False,
+        fallback_to_web: bool = False,
     ) -> Union[Dict[str, Any], Iterator[str]]:
         """Ask a question and receive a grounded answer with page-level citations.
 
@@ -158,6 +172,8 @@ class StudyAssistant:
             augment_mode: Augmentation strategy ('expand', 'rewrite', 'hyde').
             min_similarity: Optional minimum cosine similarity threshold for vector retrieval.
             min_rerank_score: Optional minimum score threshold for semantic reranker.
+            use_web: Whether to include Tavily web search results.
+            fallback_to_web: Whether to query Tavily if local knowledge base is empty or lacks context.
 
         Returns:
             Dictionary with 'answer', 'sources', 'chunks', 'model', and 'provider',
@@ -178,6 +194,20 @@ class StudyAssistant:
 
         # Guard: Empty database
         if self.count() == 0:
+            if (use_web or fallback_to_web) and self.tavily and self.tavily.is_available:
+                web_chunks = self.tavily.search(query=query.strip(), max_results=top_n)
+                if web_chunks:
+                    context = self.retriever.format_context(web_chunks)
+                    if stream:
+                        return self.generator.generate_stream(query=query.strip(), context=context)
+                    gen_result = self.generator.generate(query=query.strip(), context=context)
+                    return {
+                        "answer": gen_result.get("answer", ""),
+                        "sources": gen_result.get("sources", []),
+                        "chunks": web_chunks,
+                        "model": gen_result.get("model", ""),
+                        "provider": gen_result.get("provider", ""),
+                    }
             msg = "Vector database is empty. Please ingest your study notes or course materials first using assistant.ingest()."
             if stream:
                 return iter([msg])
@@ -198,7 +228,14 @@ class StudyAssistant:
             augment_mode=augment_mode,
             min_similarity=min_similarity,
             min_rerank_score=min_rerank_score,
+            use_web=use_web,
         )
+
+        # Fallback to Tavily if local search returned no relevant chunks and fallback_to_web is enabled
+        if not reranked_chunks and fallback_to_web and not use_web and self.tavily and self.tavily.is_available:
+            web_chunks = self.tavily.search(query=query.strip(), max_results=top_n)
+            if web_chunks:
+                reranked_chunks = self.reranker.rerank(query=query.strip(), chunks=web_chunks, top_n=top_n)
 
         # 2. Format Context for Pedagogical Generator
         context = self.retriever.format_context(reranked_chunks)
@@ -277,6 +314,7 @@ def main():
     parser.add_argument("--top-n", type=int, default=5, help="Final chunks to retain after reranking (default: 5)")
     parser.add_argument("--no-augment", action="store_true", help="Disable query augmentation")
     parser.add_argument("--mode", type=str, default="expand", choices=["expand", "rewrite", "hyde"], help="Augmentation mode")
+    parser.add_argument("--web", action="store_true", help="Enable Tavily web search integration")
     parser.add_argument("--db-path", type=str, default="./chroma_db", help="Path to persistent ChromaDB directory")
 
     args = parser.parse_args()
@@ -290,14 +328,18 @@ def main():
     elif args.ask:
         print(f"\nQuestion: {args.ask}")
         print("Generating answer...\n")
-        response = assistant.ask(
-            query=args.ask,
-            stream=False,
-            top_k=args.top_k,
-            top_n=args.top_n,
-            augment=not args.no_augment,
-            augment_mode=args.mode,
-        )
+        ask_kwargs = {
+            "query": args.ask,
+            "stream": False,
+            "top_k": args.top_k,
+            "top_n": args.top_n,
+            "augment": not args.no_augment,
+            "augment_mode": args.mode,
+        }
+        if args.web:
+            ask_kwargs["use_web"] = True
+
+        response = assistant.ask(**ask_kwargs)
         print("=== TUTOR ANSWER ===")
         print(response["answer"])
         print("\n=== CITED SOURCES ===")

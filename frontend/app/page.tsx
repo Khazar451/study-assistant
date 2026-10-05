@@ -209,6 +209,7 @@ export default function StudyAssistantApp() {
   const [inputQuery, setInputQuery] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
   const [augmentMode, setAugmentMode] = useState<"expand" | "rewrite" | "hyde">("expand");
+  const [useWeb, setUseWeb] = useState(false);
   const [selectedCitation, setSelectedCitation] = useState<any | null>(null);
 
   // Retrieval configuration
@@ -311,7 +312,7 @@ export default function StudyAssistantApp() {
     const startTime = Date.now();
 
     try {
-      const url = `/api/ask/stream?query=${encodeURIComponent(q)}&top_k=${topK}&top_n=${topN}&augment_mode=${augmentMode}`;
+      const url = `/api/ask/stream?query=${encodeURIComponent(q)}&top_k=${topK}&top_n=${topN}&augment_mode=${augmentMode}&use_web=${useWeb}`;
       const response = await fetch(url);
 
       if (!response.ok || !response.body) {
@@ -379,6 +380,7 @@ export default function StudyAssistantApp() {
             top_k: topK,
             top_n: topN,
             augment_mode: augmentMode,
+            use_web: useWeb,
           }),
         });
         const data = await res.json();
@@ -710,6 +712,13 @@ export default function StudyAssistantApp() {
                       title="Deep Search: Passage-level semantic matching for complex questions"
                     >
                       Deep Search
+                    </button>
+                    <button
+                      className={`strategy-btn ${useWeb ? "active" : ""}`}
+                      onClick={() => setUseWeb(!useWeb)}
+                      title="Web Search: Retrieve from Tavily web search in addition to course materials"
+                    >
+                      Web Search
                     </button>
                   </div>
 
