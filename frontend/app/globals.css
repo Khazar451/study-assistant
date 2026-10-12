@@ -605,6 +605,16 @@ body {
   color: var(--text-secondary);
 }
 
+.markdown-body img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 12px 0;
+  background: #fff;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+}
+
 .markdown-body table {
   display: block;
   max-width: 100%;

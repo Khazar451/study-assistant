@@ -37,6 +37,18 @@ def test_bracketed_partial_derivative_becomes_katex():
     assert r"\partial f/\partial x" in polished
 
 
+def test_partial_formula_stays_one_math_block():
+    raw = (
+        r"\frac{\partial f}{\partial x}(x_0,y_0)=\lim_{h\to0}"
+        r"\frac{f(x_0+h,y_0)-f(x_0,y_0)}{h}."
+    )
+    polished = normalize_math(raw)
+    assert polished.count("$$") == 2
+    assert "$x_0,y_0$" not in polished
+    assert "(x_0,y_0)" in polished
+    assert r"\frac{f(x_0+h,y_0)-f(x_0,y_0)}{h}" in polished
+
+
 def test_setext_headings_become_atx():
     raw = "Abraham Lincoln\n================\n\nExam contrast\n-------------\nHe preserved the Union."
     polished = setext_to_atx(raw)

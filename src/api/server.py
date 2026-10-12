@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 
 from src.assistant import StudyAssistant
+from src.generation.plots import embed_plots, ensure_requested_plot
 from src.ingestion.page_images import attach_page_images, is_library_file, render_pdf_page
 from src.generation.tutor_format import allowed_source_keys, bind_numbered_citations, infer_grounding, polish_tutor_answer
 from src.providers import PROVIDER_LABELS
@@ -352,6 +353,7 @@ def _stream_answer(assistant: Any, query: str, chunks: List[Dict[str, Any]], gro
     if grounding != "general":
         answer, references = bind_numbered_citations(answer, chunks)
         attach_page_images(references, answer)
+    answer = ensure_requested_plot(query, embed_plots(answer))
     sources = [ref["label"] for ref in references]
     done_event = {
         "type": "done",
@@ -763,6 +765,17 @@ def get_material_page(
     if image is None:
         raise HTTPException(status_code=404, detail="That page could not be drawn.")
     return FileResponse(image, media_type="image/jpeg")
+
+
+@app.get("/api/plots/{name}")
+def get_plot(name: str):
+    """Serve a graph rendered for an explanation."""
+    if not re.fullmatch(r"[0-9a-f]{20}\.png", name):
+        raise HTTPException(status_code=404, detail="Plot not found.")
+    image = Path("./data/plot_cache") / name
+    if not image.is_file():
+        raise HTTPException(status_code=404, detail="Plot not found.")
+    return FileResponse(image, media_type="image/png")
 
 
 @app.post("/api/flashcards")

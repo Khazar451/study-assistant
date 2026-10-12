@@ -131,7 +131,15 @@ def bind_numbered_citations(
             return f"[{number}]"
         return match.group(0)
 
-    text = re.sub(r"(?m)^(\d{1,2})\s*$", lift_bare_line, text)
+    text = re.sub(r"(?m)^[^\S\n]*(\d{1,2})[^\S\n]*$", lift_bare_line, text)
+
+    def attach_orphan_cite(match: re.Match) -> str:
+        number = int(match.group(2))
+        if 1 <= number <= len(references):
+            return f"{match.group(1)} [{number}]"
+        return match.group(0)
+
+    text = re.sub(r"([^\n])\n+(\d{1,2})[^\S\n]*(?=\n|$)", attach_orphan_cite, text)
     text = re.sub(r"\n+## References\b[\s\S]*$", "", text).strip()
     return text, references
 
@@ -192,35 +200,81 @@ def _looks_like_inline_math(body: str) -> bool:
     return False
 
 
+def _formula_end(text: str, start: int) -> int:
+    """End index of one TeX expression, including nested braces and parentheses."""
+    brace = 0
+    paren = 0
+    index = start
+    while index < len(text):
+        char = text[index]
+        if char == "{":
+            brace += 1
+        elif char == "}":
+            if brace == 0:
+                break
+            brace -= 1
+        elif char == "(":
+            paren += 1
+        elif char == ")":
+            if paren == 0:
+                break
+            paren -= 1
+        elif char in "\n$":
+            break
+        elif char == "." and brace == 0 and paren == 0:
+            nxt = text[index + 1] if index + 1 < len(text) else ""
+            if not nxt.isdigit():
+                break
+        index += 1
+    return index
+
+
+def _extract_formula_runs(segment: str) -> str:
+    pieces: List[str] = []
+    index = 0
+    while index < len(segment):
+        if segment[index] == "\\" and _MATH_COMMAND.match(segment, index):
+            end = _formula_end(segment, index)
+            pieces.append(_math_span(segment[index:end]))
+            index = end
+            continue
+        pieces.append(segment[index])
+        index += 1
+    return "".join(pieces)
+
+
 def _wrap_bare_math(segment: str) -> str:
     segment = _TEX_DISPLAY.sub(lambda match: _math_span(match.group(1)), segment)
     segment = _TEX_INLINE.sub(lambda match: _math_span(match.group(1)), segment)
     segment = _BRACKET_DISPLAY.sub(lambda match: _math_span(match.group(1)), segment)
+    segment = _extract_formula_runs(segment)
 
     pieces: List[str] = []
     index = 0
     while index < len(segment):
+        if segment.startswith("$$", index):
+            end = segment.find("$$", index + 2)
+            end = len(segment) if end == -1 else end + 2
+            pieces.append(segment[index:end])
+            index = end
+            continue
+        if segment[index] == "$":
+            end = segment.find("$", index + 1)
+            end = len(segment) if end == -1 else end + 1
+            pieces.append(segment[index:end])
+            index = end
+            continue
         if segment[index] == "(":
             end = _matching_paren(segment, index)
             body = segment[index + 1:end] if end != -1 else ""
-            if end != -1 and _looks_like_inline_math(body):
+            if end != -1 and "$" not in body and _looks_like_inline_math(body):
                 pieces.append(_math_span(body))
                 index = end + 1
                 continue
         pieces.append(segment[index])
         index += 1
     wrapped = "".join(pieces)
-
-    lines: List[str] = []
-    for line in wrapped.splitlines():
-        stripped = line.strip().strip("\\").strip()
-        if "$" in line:
-            lines.append(line)
-        elif _MATH_COMMAND.search(stripped) and len(stripped) < 300 and not re.search(r"[A-Za-z]{6,}", stripped):
-            lines.append(_math_span(stripped).strip("\n"))
-        else:
-            lines.append(line)
-    return "\n".join(lines)
+    return re.sub(r"\(\s*(\$\$(?:[\s\S]*?)\$\$|\$[^$]+\$)\s*\)", r"\1", wrapped)
 
 
 def normalize_math(text: str) -> str:

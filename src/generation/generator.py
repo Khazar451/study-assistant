@@ -40,6 +40,13 @@ class StudyGenerator:
         "$$\n\\frac{\\partial f}{\\partial x}(x_0,y_0)=\\lim_{h\\to 0}\\frac{f(x_0+h,y_0)-f(x_0,y_0)}{h}\n$$\n"
         "Never surround a formula with parentheses or square brackets. Never write a bare backslash to break a line. "
         "Use \\\\, before dx or dy. Keep citations like [1] outside the dollars.\n"
+        "8. Graphs: when a curve or surface would teach the idea, add one plot block and no other code:\n"
+        "```plot\n"
+        "{\"dim\": 2, \"expr\": \"x**2\", \"xmin\": -3, \"xmax\": 3, \"title\": \"y = x^2\"}\n"
+        "```\n"
+        "For a surface use \"dim\": 3 and an expr in x and y, which is drawn as z. "
+        "To compare two curves, use \"curves\": [{\"expr\": \"sin(x)\", \"label\": \"sin\"}, {\"expr\": \"cos(x)\", \"label\": \"cos\"}].\n"
+        "9. Comparisons: use a markdown table with a header row. Do not describe the comparison as loose columns.\n"
         "6. If the excerpts do not support an answer, say so in one sentence and ask what notes they can upload. Do not guess."
     )
 

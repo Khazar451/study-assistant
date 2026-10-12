@@ -891,7 +891,7 @@ export default function StudyAssistantApp() {
                                       className="cite-num"
                                       onClick={() => ref && openReference(ref)}
                                     >
-                                      {children}
+                                      [{href.slice(5)}]
                                     </button>
                                   );
                                 }
