@@ -170,7 +170,7 @@ BACKEND_PID=$!
 # Wait for backend health
 BACKEND_READY=false
 for i in $(seq 1 30); do
-    if curl -s "http://127.0.0.1:${BACKEND_PORT}/api/status" 2>/dev/null | grep -q "status"; then
+    if curl -sS --max-time 2 "http://127.0.0.1:${BACKEND_PORT}/api/status" 2>/dev/null | grep -q "status"; then
         BACKEND_READY=true
         break
     fi

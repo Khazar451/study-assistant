@@ -3,6 +3,9 @@
 import React, { useState, useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
+import "katex/dist/katex.min.css";
 
 function prepareTutorMarkdown(text: string): string {
   const lines = text.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\uFE0F]/gu, "").split("\n");
@@ -191,6 +194,7 @@ interface ReferenceItem {
   file_path?: string;
   url?: string;
   preview?: string;
+  image_url?: string;
 }
 
 interface DocItem {
@@ -516,7 +520,11 @@ export default function StudyAssistantApp() {
         data = await res.json();
       } else {
         const rawText = await res.text();
-        throw new Error(rawText || `Server returned status ${res.status}`);
+        throw new Error(
+          rawText && !rawText.startsWith("<")
+            ? rawText
+            : `Upload failed (${res.status}). The file may be too large for the proxy, or the study server is still indexing another book.`
+        );
       }
 
       if (!res.ok) {
@@ -871,7 +879,8 @@ export default function StudyAssistantApp() {
                       {msg.sender === "tutor" ? (
                         <div className="message-content markdown-body">
                           <ReactMarkdown
-                            remarkPlugins={[remarkGfm]}
+                            remarkPlugins={[remarkGfm, remarkMath]}
+                            rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: "ignore" }]]}
                             components={{
                               a: ({ href, children }) => {
                                 if (href?.startsWith("#ref-")) {
@@ -902,6 +911,19 @@ export default function StudyAssistantApp() {
                       )}
 
                       {/* Cited Sources List */}
+                      {msg.references?.some((ref) => ref.image_url) && (
+                        <div className="page-figures">
+                          {msg.references
+                            .filter((ref) => ref.image_url)
+                            .map((ref) => (
+                              <figure key={`${ref.file_path}-${ref.page}`} className="page-figure">
+                                <img src={ref.image_url} alt={ref.label} />
+                                <figcaption>{ref.label}</figcaption>
+                              </figure>
+                            ))}
+                        </div>
+                      )}
+
                       {msg.references && msg.references.length > 0 && (
                         <ol className="reference-list">
                           {msg.references.map((ref) => (

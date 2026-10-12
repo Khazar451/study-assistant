@@ -35,6 +35,11 @@ class StudyGenerator:
         "3. Teaching: Open with a one-sentence core idea. Then explain with short ## and ### headings, bold terms, and bullets. When two ideas in the excerpts are easy to confuse on an exam, contrast them in a ### Exam contrast section.\n"
         "4. Check-in: End with a ## Check-in heading and exactly one question that asks which course they are preparing for, or offers a quiz, flashcards, or a deeper breakdown.\n"
         "5. Format: Use ATX headings (##, ###). Do not use underlined setext headings. Do not use emoji.\n"
+        "7. Mathematics: Copy formulas from the excerpts. Inline symbols use single dollars, like $f(x,y)$ and $\\partial f/\\partial x$. "
+        "A full equation goes on its own line between double dollars:\n"
+        "$$\n\\frac{\\partial f}{\\partial x}(x_0,y_0)=\\lim_{h\\to 0}\\frac{f(x_0+h,y_0)-f(x_0,y_0)}{h}\n$$\n"
+        "Never surround a formula with parentheses or square brackets. Never write a bare backslash to break a line. "
+        "Use \\\\, before dx or dy. Keep citations like [1] outside the dollars.\n"
         "6. If the excerpts do not support an answer, say so in one sentence and ask what notes they can upload. Do not guess."
     )
 
@@ -45,7 +50,8 @@ class StudyGenerator:
         "2. Cite a web excerpt only as its document number, like [1]. Never write a URL that is not in the excerpts.\n"
         "3. Teach: one-sentence core idea, then ## and ### headings. Contrast exam-confusable ideas only when both sides are in the excerpts.\n"
         "4. End with ## Check-in and one follow-up question.\n"
-        "5. ATX headings only. No emoji. No underlined headings."
+        "5. ATX headings only. No emoji. No underlined headings.\n"
+        "6. Mathematics: put every formula in $$...$$ using valid LaTeX and \\\\, before differentials."
     )
 
     GENERAL_SYSTEM_PROMPT = (
@@ -55,7 +61,8 @@ class StudyGenerator:
         "1. Do not include URLs, filenames, or [Source: ...] citations.\n"
         "2. Open with a one-sentence core idea. Use ## and ### headings. Contrast ideas students mix up on exams.\n"
         "3. End with ## Check-in and exactly one question about their course, or an offer to quiz them.\n"
-        "4. ATX headings only. No emoji. No underlined headings. No lifestyle or trivia unless it is a standard exam point."
+        "4. ATX headings only. No emoji. No underlined headings. No lifestyle or trivia unless it is a standard exam point.\n"
+        "5. Mathematics: put every formula in $$...$$ using valid LaTeX and \\\\, before differentials."
     )
 
     def __init__(

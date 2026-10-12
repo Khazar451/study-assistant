@@ -2,9 +2,39 @@ from src.generation.tutor_format import (
     bind_numbered_citations,
     drop_unverified_citations,
     infer_grounding,
+    normalize_math,
     polish_tutor_answer,
     setext_to_atx,
 )
+
+
+def test_broken_integral_becomes_display_math():
+    raw = (
+        r"The formula is (\displaystyle\int_a^b f(x)g'(x),dx = "
+        r"f(x)g(x)\Big|_a^b-\int_a^b f'(x)g(x),dx) [1]."
+    )
+    polished = normalize_math(raw)
+    assert r"\displaystyle" not in polished
+    assert r"g'(x)\,dx" in polished
+    assert r"g(x)\,dx" in polished
+    assert r"\int_a^b" in polished
+    assert polished.count("$$") >= 2
+
+
+def test_bracketed_partial_derivative_becomes_katex():
+    raw = (
+        "The partial derivative of (f(x,y)) with respect to (x) is\n"
+        r"[ \frac{\partial f}{\partial x}(x_0,y_0)=\lim_{h\to0}\frac{f(x_0+h,y_0)-f(x_0,y_0)}{h}. ]"
+        "\n1\n"
+        r"Fix (y=y_0). The slope is (\partial f/\partial x)."
+    )
+    polished = normalize_math(raw)
+    assert r"\frac{\partial f}{\partial x}" in polished
+    assert "$$" in polished
+    assert "$f(x,y)$" in polished
+    assert "$y=y_0$" in polished
+    assert r"$(\partial f/\partial x)$" not in polished
+    assert r"\partial f/\partial x" in polished
 
 
 def test_setext_headings_become_atx():

@@ -51,12 +51,17 @@ class DocumentLoader:
         documents: List[Document] = []
         reader = PdfReader(str(path))
 
+        page_count = len(reader.pages)
+        # A full textbook has hundreds of embedded figures. Describing each one
+        # stalls the upload and then the vision API rejects the rest of the book.
+        allow_vision = self.extract_visuals and self.vision_describer is not None and page_count <= 40
+        vision_calls = 0
+
         for page_idx, page in enumerate(reader.pages, start=1):
             text = page.extract_text() or ""
             diagram_descriptions: List[str] = []
 
-            # Extract visual diagrams and slide figures if enabled
-            if self.extract_visuals and self.vision_describer:
+            if allow_vision and vision_calls < 8:
                 try:
                     for img_obj in page.images:
                         img_bytes = img_obj.data
@@ -67,6 +72,9 @@ class DocumentLoader:
                             )
                             if desc and desc not in diagram_descriptions:
                                 diagram_descriptions.append(desc)
+                                vision_calls += 1
+                            if vision_calls >= 8:
+                                break
                 except Exception:
                     # Robust error isolation: Never fail text extraction on image parsing hiccups
                     pass

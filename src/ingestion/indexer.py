@@ -3,6 +3,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 import chromadb
 from chromadb.api import ClientAPI
+from chromadb.api.types import ReadLevel
 
 
 class ChromaIndexer:
@@ -169,8 +170,9 @@ class ChromaIndexer:
         return formatted_results
 
     def count(self) -> int:
-        # Return the total number of chunks currently stored in the collection.
-        return self.collection.count()
+        # Read the compacted index only. Counting through the write-ahead log
+        # deadlocks after a large book ingest leaves entries uncompacted.
+        return self.collection.count(read_level=ReadLevel.INDEX_ONLY)
 
     def delete(
         self,

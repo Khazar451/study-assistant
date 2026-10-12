@@ -33,7 +33,7 @@ class IngestionPipeline:
         chunker: Optional[Union[DocumentChunker, Callable]] = None,
         embedder: Optional[NvidiaEmbedder] = None,
         indexer: Optional[ChromaIndexer] = None,
-        batch_size: int = 64,
+        batch_size: int = 16,
         vision_describer: Optional[Any] = None,
     ):
         if loader is not None:
@@ -84,6 +84,7 @@ class IngestionPipeline:
         else:
             chunks = chunk_documents(raw_docs)
 
+        chunks = [chunk for chunk in chunks if (chunk.page_content or "").strip()]
         if not chunks:
             if progress_callback:
                 progress_callback(0, 0)
@@ -112,10 +113,16 @@ class IngestionPipeline:
             batch = chunks[i : i + self.batch_size]
             texts = [c.page_content for c in batch]
 
-            if hasattr(self.embedder, "embed_documents"):
+            if hasattr(self.embedder, "embed_batch"):
+                embeddings = self.embedder.embed_batch(
+                    texts,
+                    input_type="passage",
+                    batch_size=min(8, len(texts)),
+                    max_retries=5,
+                    truncate="END",
+                )
+            elif hasattr(self.embedder, "embed_documents"):
                 embeddings = self.embedder.embed_documents(texts)
-            elif hasattr(self.embedder, "embed_batch"):
-                embeddings = self.embedder.embed_batch(texts)
             else:
                 embeddings = None
 

@@ -38,6 +38,8 @@ class NvidiaEmbedder:
         self.client = OpenAI(
             api_key=self.api_key,
             base_url=self.base_url,
+            timeout=120.0,
+            max_retries=0,
         )
 
     def embed_text(self, text: str, input_type: str = "passage") -> List[float]:
@@ -65,26 +67,54 @@ class NvidiaEmbedder:
 
         all_embeddings: List[List[float]] = []
         for i in range(0, len(texts), batch_size):
-            batch = texts[i : i + batch_size]
-            last_err = None
-            for attempt in range(max_retries):
-                try:
-                    response = self.client.embeddings.create(
-                        model=self.model,
-                        input=batch,
-                        encoding_format="float",
-                        extra_body={"input_type": input_type, "truncate": truncate},
-                    )
-                    all_embeddings.extend([item.embedding for item in response.data])
-                    break
-                except Exception as e:
-                    last_err = e
-                    if attempt < max_retries - 1:
-                        time.sleep(0.8 * (2 ** attempt))
-                    else:
-                        raise last_err
+            batch = [self._clip(text) for text in texts[i : i + batch_size]]
+            all_embeddings.extend(
+                self._embed_resilient(
+                    batch,
+                    input_type=input_type,
+                    truncate=truncate,
+                    max_retries=max_retries,
+                )
+            )
 
         return all_embeddings
+
+    @staticmethod
+    def _clip(text: str, limit: int = 6000) -> str:
+        cleaned = (text or "").strip()
+        if len(cleaned) <= limit:
+            return cleaned or " "
+        return cleaned[:limit]
+
+    def _embed_resilient(
+        self,
+        batch: List[str],
+        input_type: str,
+        truncate: str,
+        max_retries: int,
+    ) -> List[List[float]]:
+        """Retry a batch, then split it, so one rejected passage does not abort the book."""
+        last_err: Optional[Exception] = None
+        for attempt in range(max_retries):
+            try:
+                response = self.client.embeddings.create(
+                    model=self.model,
+                    input=batch,
+                    encoding_format="float",
+                    extra_body={"input_type": input_type, "truncate": truncate},
+                )
+                ordered = sorted(response.data, key=lambda item: getattr(item, "index", 0))
+                return [item.embedding for item in ordered]
+            except Exception as exc:
+                last_err = exc
+                if attempt < max_retries - 1:
+                    time.sleep(min(20.0, 1.5 * (2 ** attempt)))
+        if len(batch) == 1:
+            raise last_err or RuntimeError("Embedding request failed")
+        mid = max(1, len(batch) // 2)
+        return self._embed_resilient(batch[:mid], input_type, truncate, max_retries) + self._embed_resilient(
+            batch[mid:], input_type, truncate, max_retries
+        )
 
     def embed_documents(self, texts: List[str], batch_size: int = 64) -> List[List[float]]:
         """Generate embeddings for documents with input_type='passage' (LangChain naming convention)."""

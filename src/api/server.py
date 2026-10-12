@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 import re
+import threading
 import time
 from typing import Any, Dict, Iterator, List, Optional
 import uuid
@@ -16,6 +18,7 @@ from pydantic import BaseModel, Field
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 
 from src.assistant import StudyAssistant
+from src.ingestion.page_images import attach_page_images, is_library_file, render_pdf_page
 from src.generation.tutor_format import allowed_source_keys, bind_numbered_citations, infer_grounding, polish_tutor_answer
 from src.providers import PROVIDER_LABELS
 
@@ -348,6 +351,7 @@ def _stream_answer(assistant: Any, query: str, chunks: List[Dict[str, Any]], gro
     references: List[Dict[str, Any]] = []
     if grounding != "general":
         answer, references = bind_numbered_citations(answer, chunks)
+        attach_page_images(references, answer)
     sources = [ref["label"] for ref in references]
     done_event = {
         "type": "done",
@@ -428,42 +432,73 @@ def get_documents() -> Dict[str, Any]:
 
 # Ingestion Job Tracker
 ingestion_jobs: Dict[str, Dict[str, Any]] = {}
+_ingest_lock = threading.Lock()
+_log = logging.getLogger("study.ingest")
+MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 
 
 def _run_ingestion_worker(job_id: str, target_path: Path, filename: str) -> None:
-    """Worker task executed in a background thread."""
+    """Index one book at a time so ChromaDB is not written by two uploads at once."""
     assistant = get_assistant()
     try:
-        def on_progress(processed: int, total: int) -> None:
-            if job_id in ingestion_jobs:
-                ingestion_jobs[job_id]["processed_chunks"] = processed
-                ingestion_jobs[job_id]["total_chunks"] = total
-                ingestion_jobs[job_id]["progress"] = int((processed / total) * 100) if total > 0 else 0
-                ingestion_jobs[job_id]["updated_at"] = time.time()
+        with _ingest_lock:
+            def on_progress(processed: int, total: int) -> None:
+                if job_id in ingestion_jobs:
+                    ingestion_jobs[job_id]["processed_chunks"] = processed
+                    ingestion_jobs[job_id]["total_chunks"] = total
+                    ingestion_jobs[job_id]["progress"] = int((processed / total) * 100) if total > 0 else 0
+                    ingestion_jobs[job_id]["updated_at"] = time.time()
 
-        if hasattr(assistant, "ingest"):
-            import inspect
-            sig = inspect.signature(assistant.ingest)
-            if "progress_callback" in sig.parameters:
-                result = assistant.ingest(target_path, progress_callback=on_progress)
+            if hasattr(assistant, "ingest"):
+                import inspect
+                sig = inspect.signature(assistant.ingest)
+                if "progress_callback" in sig.parameters:
+                    result = assistant.ingest(target_path, progress_callback=on_progress)
+                else:
+                    result = assistant.ingest(target_path)
             else:
-                result = assistant.ingest(target_path)
-        else:
-            result = {"status": "success", "file": filename}
+                result = {"status": "success", "file": filename}
 
-        if job_id in ingestion_jobs:
-            ingestion_jobs[job_id]["status"] = "completed"
-            ingestion_jobs[job_id]["progress"] = 100
-            ingestion_jobs[job_id]["result"] = result
-            ingestion_jobs[job_id]["completed_at"] = time.time()
-            ingestion_jobs[job_id]["total_indexed_chunks"] = (
-                assistant.count() if hasattr(assistant, "count") else 0
-            )
+            if job_id in ingestion_jobs:
+                ingestion_jobs[job_id]["status"] = "completed"
+                ingestion_jobs[job_id]["progress"] = 100
+                ingestion_jobs[job_id]["result"] = result
+                ingestion_jobs[job_id]["completed_at"] = time.time()
+                ingestion_jobs[job_id]["total_indexed_chunks"] = (
+                    assistant.count() if hasattr(assistant, "count") else 0
+                )
     except Exception as e:
+        _log.exception("Ingestion failed for %s", filename)
         if job_id in ingestion_jobs:
             ingestion_jobs[job_id]["status"] = "failed"
             ingestion_jobs[job_id]["error"] = str(e)
             ingestion_jobs[job_id]["completed_at"] = time.time()
+
+
+async def _save_upload(file: UploadFile, target_path: Path) -> int:
+    """Write an upload to disk in chunks so a textbook is not held entirely in memory."""
+    size = 0
+    try:
+        with open(target_path, "wb") as handle:
+            while True:
+                block = await file.read(1024 * 1024)
+                if not block:
+                    break
+                size += len(block)
+                if size > MAX_UPLOAD_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail="This file is larger than 200 MB. Split the book or upload a smaller PDF.",
+                    )
+                handle.write(block)
+    except Exception:
+        if target_path.exists():
+            target_path.unlink(missing_ok=True)
+        raise
+    if size == 0:
+        target_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="The uploaded file is empty.")
+    return size
 
 
 @app.post("/api/ingest/file")
@@ -489,16 +524,14 @@ async def ingest_file(
 
     upload_dir = Path("./data/uploads").resolve()
     upload_dir.mkdir(parents=True, exist_ok=True)
-    target_path = upload_dir / filename
-
-    content = await file.read()
-    with open(target_path, "wb") as f:
-        f.write(content)
+    safe_name = Path(filename).name
+    target_path = upload_dir / safe_name
+    await _save_upload(file, target_path)
 
     job_id = str(uuid.uuid4())
     ingestion_jobs[job_id] = {
         "job_id": job_id,
-        "filename": filename,
+        "filename": safe_name,
         "status": "processing",
         "progress": 0,
         "processed_chunks": 0,
@@ -512,12 +545,17 @@ async def ingest_file(
     assistant = get_assistant()
 
     if background:
-        background_tasks.add_task(_run_ingestion_worker, job_id, target_path, filename)
+        threading.Thread(
+            target=_run_ingestion_worker,
+            args=(job_id, target_path, safe_name),
+            name=f"ingest-{job_id[:8]}",
+            daemon=True,
+        ).start()
         return {
             "success": True,
             "job_id": job_id,
             "status": "processing",
-            "filename": filename,
+            "filename": safe_name,
             "total_indexed_chunks": assistant.count() if hasattr(assistant, "count") else 0,
         }
 
@@ -710,6 +748,21 @@ def get_material_file(path: str = Query(..., description="Absolute path of an in
     if not allowed:
         raise HTTPException(status_code=404, detail="File is not in the course library.")
     return FileResponse(target)
+
+
+@app.get("/api/materials/page")
+def get_material_page(
+    path: str = Query(..., description="Absolute path of an indexed PDF"),
+    page: int = Query(1, ge=1),
+):
+    """Return a JPEG of one cited book page."""
+    target = Path(path)
+    if not is_library_file(target):
+        raise HTTPException(status_code=404, detail="File is not in the course library.")
+    image = render_pdf_page(str(target), page)
+    if image is None:
+        raise HTTPException(status_code=404, detail="That page could not be drawn.")
+    return FileResponse(image, media_type="image/jpeg")
 
 
 @app.post("/api/flashcards")
