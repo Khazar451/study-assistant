@@ -10,6 +10,8 @@ from dotenv import load_dotenv
 from openai import OpenAI
 import requests
 
+from src import providers
+
 # Load environment variables
 load_dotenv(".env.local")
 load_dotenv()
@@ -78,27 +80,31 @@ class StudyReranker:
         self.timeout = timeout
         self.ranking_api_available: bool = True
 
-        # Resolve credentials: parameter > specific env > NVIDIA_API_KEY > NEBIUS_API_KEY
-        self.api_key = (
-            api_key
-            or llm_api_key
-            or ranking_api_key
-            or os.getenv("NVIDIA_API_KEY")
-            or os.getenv("NEBIUS_API_KEY")
-        )
-        if not self.api_key:
+        # Explicit keys use NVIDIA NIM defaults; otherwise the environment picks the provider
+        # (Nebius Token Factory first). The /v1/ranking microservice is NVIDIA-only.
+        explicit_key = api_key or llm_api_key or ranking_api_key
+        resolved = None if explicit_key else providers.resolve_llm_provider("fast")
+        if not explicit_key and resolved is None:
             raise ValueError(
-                "No API key found. Please set NVIDIA_API_KEY (or NEBIUS_API_KEY) "
-                "or pass api_key to StudyReranker."
+                "No API key found. Please set NEBIUS_API_KEY (Nebius Token Factory) or NVIDIA_API_KEY "
+                "(NVIDIA NIM), or pass api_key to StudyReranker."
             )
 
-        self.llm_api_key = llm_api_key or self.api_key
-        self.ranking_api_key = ranking_api_key or self.api_key
+        self.llm_extra_body: Optional[Dict[str, Any]] = resolved.extra_body if resolved else None
+        if resolved is not None:
+            self.api_key = resolved.api_key
+            self.llm_api_key = resolved.api_key
+            self.llm_base_url = llm_base_url or resolved.base_url
+            self.llm_model = llm_model or resolved.model
+            self.ranking_api_key = os.getenv("NVIDIA_API_KEY") or resolved.api_key
+        else:
+            self.api_key = explicit_key
+            self.llm_api_key = llm_api_key or self.api_key
+            self.llm_base_url = llm_base_url or os.getenv("NVIDIA_BASE_URL", self.DEFAULT_LLM_BASE_URL)
+            self.llm_model = llm_model or os.getenv("LLM_MODEL", self.DEFAULT_LLM_MODEL)
+            self.ranking_api_key = ranking_api_key or self.api_key
 
-        self.llm_base_url = llm_base_url or os.getenv("NVIDIA_BASE_URL", self.DEFAULT_LLM_BASE_URL)
         self.ranking_base_url = ranking_base_url or os.getenv("RANKING_BASE_URL", self.DEFAULT_RANKING_BASE_URL)
-
-        self.llm_model = llm_model or os.getenv("LLM_MODEL", self.DEFAULT_LLM_MODEL)
         self.ranking_model = ranking_model or os.getenv("RANKING_MODEL", self.DEFAULT_RANKING_MODEL)
 
         self.client = client or OpenAI(
@@ -165,8 +171,9 @@ class StudyReranker:
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.0,
                     max_tokens=400,
+                    extra_body=self.llm_extra_body,
                 )
-                raw_text = response.choices[0].message.content.strip()
+                raw_text = providers.strip_reasoning(response.choices[0].message.content or "")
 
                 # Extract JSON even if wrapped in markdown code fences
                 match = re.search(r"\[\s*\{.*?\}\s*\]", raw_text, re.DOTALL)

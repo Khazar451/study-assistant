@@ -28,25 +28,58 @@ def test_missing_api_keys_raises_value_error(monkeypatch):
         StudyGenerator()
 
 
-def test_nvidia_key_is_primary_when_both_set(monkeypatch):
+def test_nebius_key_is_primary_when_both_set(monkeypatch):
     monkeypatch.setenv("NVIDIA_API_KEY", "nv-test-key-123")
     monkeypatch.setenv("NEBIUS_API_KEY", "neb-test-key-456")
+    monkeypatch.delenv("NEBIUS_BASE_URL", raising=False)
+    monkeypatch.delenv("NEBIUS_MODEL", raising=False)
+    monkeypatch.setenv("LLM_MODEL", "meta/llama-3.2-11b-vision-instruct")
 
     generator = StudyGenerator()
-    assert generator.api_key == "nv-test-key-123"
-    assert generator.provider == "nvidia"
-    assert "nvidia.com" in generator.base_url
-    assert "llama" in generator.model.lower()
-
-
-def test_nebius_key_fallback_when_nvidia_absent(monkeypatch):
-    monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
-    monkeypatch.setenv("NEBIUS_API_KEY", "neb-test-key-789")
-
-    generator = StudyGenerator()
-    assert generator.api_key == "neb-test-key-789"
+    assert generator.api_key == "neb-test-key-456"
     assert generator.provider == "nebius"
-    assert "nebius.ai" in generator.base_url
+    assert generator.provider_label == "Nebius Token Factory"
+    assert "tokenfactory.nebius.com" in generator.base_url
+    assert generator.model.startswith("nvidia/") and "nemotron" in generator.model.lower()
+
+
+def test_nvidia_key_fallback_when_nebius_absent(monkeypatch):
+    monkeypatch.delenv("NEBIUS_API_KEY", raising=False)
+    monkeypatch.setenv("NVIDIA_API_KEY", "nv-test-key-789")
+    monkeypatch.delenv("NVIDIA_BASE_URL", raising=False)
+
+    generator = StudyGenerator()
+    assert generator.api_key == "nv-test-key-789"
+    assert generator.provider == "nvidia"
+    assert generator.provider_label == "NVIDIA NIM"
+    assert "nvidia.com" in generator.base_url
+
+
+def test_generate_strips_inline_reasoning(mock_openai_client):
+    mock_openai_client.chat.completions.create.return_value.choices[0].message.content = (
+        "<think>The context mentions inertia on page 4.</think>\nInertia is resistance to motion changes."
+    )
+    generator = StudyGenerator(api_key="dummy-key", client=mock_openai_client)
+    result = generator.generate(query="What is inertia?", context="some context")
+    assert result["answer"] == "Inertia is resistance to motion changes."
+
+
+def test_generate_stream_filters_reasoning_split_across_tokens(mock_openai_client):
+    def create_chunk(content):
+        chunk = MagicMock()
+        chunk.choices = [MagicMock()]
+        chunk.choices[0].delta.content = content
+        return chunk
+
+    mock_openai_client.chat.completions.create.return_value = iter([
+        create_chunk("<thi"),
+        create_chunk("nk>planning the answer</th"),
+        create_chunk("ink>\nNewton's "),
+        create_chunk("First Law."),
+    ])
+    generator = StudyGenerator(api_key="dummy-key", client=mock_openai_client)
+    tokens = list(generator.generate_stream(query="Explain inertia", context="some context"))
+    assert "".join(tokens) == "Newton's First Law."
 
 
 def test_explicit_api_key_override(monkeypatch):
@@ -113,7 +146,8 @@ def test_generate_answer(mock_openai_client):
     call_kwargs = mock_openai_client.chat.completions.create.call_args.kwargs
     messages = call_kwargs["messages"]
     assert messages[0]["role"] == "system"
-    assert "Grounding: Rely ONLY on the facts" in messages[0]["content"]
+    assert "Use only facts in the context excerpts" in messages[0]["content"]
+    assert "Check-in" in messages[0]["content"]
     assert "Student Question: What is inertia?" in messages[1]["content"]
     assert "Context Excerpts:" in messages[1]["content"]
 

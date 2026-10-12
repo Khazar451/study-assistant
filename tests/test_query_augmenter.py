@@ -7,8 +7,27 @@ from src.retrieval.query_augmenter import QueryAugmenter
 
 def test_init_missing_api_key_raises_error(monkeypatch):
     monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
-    with pytest.raises(ValueError, match="NVIDIA_API_KEY is not set"):
+    monkeypatch.delenv("NEBIUS_API_KEY", raising=False)
+    with pytest.raises(ValueError, match="No API key found"):
         QueryAugmenter(api_key=None)
+
+
+def test_init_prefers_nebius_fast_model(monkeypatch):
+    monkeypatch.setenv("NVIDIA_API_KEY", "nv-key")
+    monkeypatch.setenv("NEBIUS_API_KEY", "neb-key")
+    monkeypatch.delenv("NEBIUS_BASE_URL", raising=False)
+    monkeypatch.delenv("NEBIUS_FAST_MODEL", raising=False)
+
+    augmenter = QueryAugmenter()
+    assert augmenter.api_key == "neb-key"
+    assert "tokenfactory.nebius.com" in augmenter.base_url
+    assert augmenter.model == "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B"
+    assert augmenter.extra_body == {"chat_template_kwargs": {"enable_thinking": False}}
+
+
+def test_explicit_key_sends_no_extra_body():
+    augmenter = QueryAugmenter(api_key="test-api-key")
+    assert augmenter.extra_body is None
 
 
 def test_init_with_explicit_params():

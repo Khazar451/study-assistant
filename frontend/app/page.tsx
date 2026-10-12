@@ -1,6 +1,33 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+
+function prepareTutorMarkdown(text: string): string {
+  const lines = text.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\uFE0F]/gu, "").split("\n");
+  const output: string[] = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const title = lines[i].trim();
+    const next = (lines[i + 1] || "").trim();
+    if (title && !/^[#\-*|>]/.test(title) && /^=+$/.test(next)) {
+      output.push(`## ${title}`);
+      i += 1;
+      continue;
+    }
+    if (title && !/^[#\-*|>]/.test(title) && next.length >= 3 && /^-+$/.test(next)) {
+      output.push(`### ${title}`);
+      i += 1;
+      continue;
+    }
+    output.push(lines[i]);
+  }
+  return output.join("\n");
+}
+
+function linkCitations(text: string): string {
+  return text.replace(/\[(\d{1,2})\]/g, "[$1](#ref-$1)");
+}
 
 // --- Clean SVG Icons (Zero Emojis) ---
 
@@ -149,7 +176,21 @@ interface Message {
   chunks?: any[];
   durationMs?: number;
   model?: string;
+  provider?: string;
+  grounding?: "course" | "web" | "general" | "notes" | "both" | "";
+  references?: ReferenceItem[];
   timestamp: string;
+}
+
+interface ReferenceItem {
+  n: number;
+  label: string;
+  source: string;
+  page?: number | string;
+  source_type?: string;
+  file_path?: string;
+  url?: string;
+  preview?: string;
 }
 
 interface DocItem {
@@ -175,9 +216,14 @@ interface SystemStatus {
   provider: string;
   nvidia_configured: boolean;
   nebius_configured: boolean;
+  tavily_configured?: boolean;
+  tavily_available?: boolean;
   indexed_chunks: number;
   persist_directory: string;
   generation_model: string;
+  augment_model?: string;
+  rerank_model?: string;
+  embedding_model?: string;
 }
 
 export default function StudyAssistantApp() {
@@ -190,12 +236,14 @@ export default function StudyAssistantApp() {
   // Status state
   const [status, setStatus] = useState<SystemStatus>({
     status: "connecting",
-    provider: "NVIDIA NIM",
-    nvidia_configured: true,
-    nebius_configured: true,
+    provider: "",
+    nvidia_configured: false,
+    nebius_configured: false,
+    tavily_configured: false,
+    tavily_available: false,
     indexed_chunks: 0,
     persist_directory: "./chroma_db",
-    generation_model: "nvidia/Llama-3.1-Nemotron-70B-Instruct-HF",
+    generation_model: "",
   });
 
   // Chat state
@@ -203,7 +251,7 @@ export default function StudyAssistantApp() {
     {
       id: "welcome",
       sender: "tutor",
-      text: "Welcome to Study Assistant. Ask any question regarding your course materials to receive grounded explanations with verified page citations.\n\nTip: You can upload your syllabus, notes, or sample Kepler materials in the Course Materials tab.",
+      text: "Ask a question about your notes, or turn on Tavily Web for academic pages. Upload a lecture PDF in Course Materials when you want page citations from your own syllabus.",
       sources: [],
       timestamp: "Just now",
     },
@@ -211,7 +259,8 @@ export default function StudyAssistantApp() {
   const [inputQuery, setInputQuery] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
   const [augmentMode, setAugmentMode] = useState<"expand" | "rewrite" | "hyde">("expand");
-  const [useWeb, setUseWeb] = useState(false);
+  const [sourceMode, setSourceMode] = useState<"notes" | "web" | "both">("notes");
+  const [searchMenuOpen, setSearchMenuOpen] = useState(false);
   const [selectedCitation, setSelectedCitation] = useState<any | null>(null);
 
   // Retrieval configuration
@@ -285,9 +334,13 @@ export default function StudyAssistantApp() {
   };
 
   // Submit academic question via SSE streaming
-  const handleAsk = async (queryText?: string) => {
+  const handleAsk = async (queryText?: string, options?: { sourceMode?: "notes" | "web" | "both" }) => {
     const q = queryText || inputQuery;
     if (!q.trim() || isGenerating) return;
+    const mode = options?.sourceMode ?? sourceMode;
+    if (options?.sourceMode) {
+      setSourceMode(options.sourceMode);
+    }
 
     setInputQuery("");
     const userMsgId = `user-${Date.now()}`;
@@ -314,7 +367,7 @@ export default function StudyAssistantApp() {
     const startTime = Date.now();
 
     try {
-      const url = `/api/ask/stream?query=${encodeURIComponent(q)}&top_k=${topK}&top_n=${topN}&augment_mode=${augmentMode}&use_web=${useWeb}`;
+      const url = `/api/ask/stream?query=${encodeURIComponent(q)}&top_k=${topK}&top_n=${topN}&augment_mode=${augmentMode}&source_mode=${mode}&use_web=false&fallback_to_web=false`;
       const response = await fetch(url);
 
       if (!response.ok || !response.body) {
@@ -326,6 +379,10 @@ export default function StudyAssistantApp() {
       let streamedAnswer = "";
       let finalSources: string[] = [];
       let finalChunks: any[] = [];
+      let finalModel: string | undefined;
+      let finalProvider: string | undefined;
+      let finalGrounding: Message["grounding"] = "";
+      let finalReferences: ReferenceItem[] = [];
 
       while (true) {
         const { value, done } = await reader.read();
@@ -349,6 +406,13 @@ export default function StudyAssistantApp() {
                 finalChunks = event.chunks || [];
               } else if (event.type === "done") {
                 finalSources = event.sources || [];
+                finalModel = event.model;
+                finalProvider = event.provider;
+                if (event.answer) {
+                  streamedAnswer = event.answer;
+                }
+                finalGrounding = event.grounding || "";
+                finalReferences = event.references || [];
               }
             } catch {
               // Ignore partial frames
@@ -367,6 +431,10 @@ export default function StudyAssistantApp() {
                 sources: finalSources,
                 chunks: finalChunks,
                 durationMs,
+                model: finalModel,
+                provider: finalProvider,
+                grounding: finalGrounding,
+                references: finalReferences,
               }
             : msg
         )
@@ -382,7 +450,9 @@ export default function StudyAssistantApp() {
             top_k: topK,
             top_n: topN,
             augment_mode: augmentMode,
-            use_web: useWeb,
+            source_mode: mode,
+            use_web: false,
+            fallback_to_web: false,
           }),
         });
         const data = await res.json();
@@ -396,6 +466,8 @@ export default function StudyAssistantApp() {
                   chunks: data.chunks || [],
                   durationMs: data.duration_ms,
                   model: data.model,
+                  provider: data.provider_label,
+                  grounding: data.grounding,
                 }
               : msg
           )
@@ -604,6 +676,34 @@ export default function StudyAssistantApp() {
     setCardScores((prev) => ({ ...prev, [id]: score }));
   };
 
+  const openReference = (ref: ReferenceItem) => {
+    if (ref.url) {
+      window.open(ref.url, "_blank", "noopener,noreferrer");
+      return;
+    }
+    if (ref.file_path) {
+      const page = ref.page || 1;
+      window.open(
+        `/api/materials/file?path=${encodeURIComponent(ref.file_path)}#page=${page}`,
+        "_blank",
+        "noopener,noreferrer"
+      );
+      return;
+    }
+    setSelectedCitation({
+      source: ref.source,
+      page: ref.page,
+      preview: ref.preview,
+      source_type: ref.source_type,
+    });
+  };
+
+  const searchChoices: { id: "expand" | "rewrite" | "hyde"; label: string }[] = [
+    { id: "expand", label: "Broader wording" },
+    { id: "rewrite", label: "Rewrite the question" },
+    { id: "hyde", label: "Match a passage" },
+  ];
+
   return (
     <div className="app-shell">
       {/* Sidebar Navigation */}
@@ -614,7 +714,7 @@ export default function StudyAssistantApp() {
           </div>
           <div className="brand-info">
             <h1>Study Assistant</h1>
-            <span>Academic RAG Tutor</span>
+            <span>Notes and tutoring</span>
           </div>
         </div>
 
@@ -627,7 +727,7 @@ export default function StudyAssistantApp() {
             <span className="nav-icon">
               <IconChat />
             </span>
-            <span className="nav-label">Academic Tutor</span>
+            <span className="nav-label">Tutor</span>
           </button>
 
           <button
@@ -638,7 +738,7 @@ export default function StudyAssistantApp() {
             <span className="nav-icon">
               <IconMaterials />
             </span>
-            <span className="nav-label">Course Materials</span>
+            <span className="nav-label">Notes</span>
           </button>
 
           <button
@@ -649,9 +749,29 @@ export default function StudyAssistantApp() {
             <span className="nav-icon">
               <IconFlashcards />
             </span>
-            <span className="nav-label">Study Flashcards</span>
+            <span className="nav-label">Recall</span>
           </button>
         </nav>
+
+        <div className="source-panel">
+          <span className="sidebar-kicker">In this session</span>
+          {documents.length === 0 ? (
+            <button className="source-empty" onClick={() => setActiveTab("materials")}>
+              Add a PDF, or load the Kepler sample.
+            </button>
+          ) : (
+            documents.slice(0, 8).map((doc) => (
+              <button key={doc.source} className="source-row" onClick={() => setActiveTab("materials")}>
+                <IconFile />
+                <span>{doc.source}</span>
+              </button>
+            ))
+          )}
+        </div>
+
+        <div className="sidebar-footer">
+          <span>{documents.length === 0 ? "Page citations need notes" : `${documents.length} notes indexed`}</span>
+        </div>
       </aside>
 
       {/* Main Content Area */}
@@ -660,9 +780,9 @@ export default function StudyAssistantApp() {
         <header className="top-header">
           <div className="header-left">
             <h2 className="header-title">
-              {activeTab === "chat" && "Academic Tutor"}
-              {activeTab === "materials" && "Course Materials"}
-              {activeTab === "flashcards" && "Study Flashcards"}
+              {activeTab === "chat" && "Tutor"}
+              {activeTab === "materials" && "Notes"}
+              {activeTab === "flashcards" && "Recall"}
             </h2>
             {activeTab === "materials" && (
               <span className="header-subtitle">PDF, Markdown and Text Indexer</span>
@@ -683,10 +803,6 @@ export default function StudyAssistantApp() {
               {theme === "dark" ? <IconSun /> : <IconMoon />}
               <span>{theme === "dark" ? "Light Mode" : "Dark Mode"}</span>
             </button>
-
-            <div className="pill-badge">
-              <span>NVIDIA NIM / Nebius</span>
-            </div>
           </div>
         </header>
 
@@ -694,60 +810,126 @@ export default function StudyAssistantApp() {
         {activeTab === "chat" && (
           <div className="view-container">
             <div className="chat-wrapper">
-              <div className="chat-history">
-                {messages.map((msg) => (
-                  <div key={msg.id} className="message-card">
-                    <div className={`avatar-icon ${msg.sender === "user" ? "user-avatar" : "tutor-avatar"}`}>
-                      {msg.sender === "user" ? <IconUser /> : <IconTutor />}
+              <div className={`chat-history ${messages.every((m) => m.id === "welcome") && !isGenerating ? "chat-history-empty" : ""}`}>
+                {messages.every((m) => m.id === "welcome") && !isGenerating && (
+                  <div className="empty-study">
+                    <p className="empty-kicker">Study session</p>
+                    <h2>What do you want to understand?</h2>
+                    <p>
+                      The tutor teaches from your notes and names the page. If a fact is not in those notes, it says so
+                      instead of citing a random webpage.
+                    </p>
+                    <div className="empty-actions">
+                      <button className="text-action" onClick={() => setActiveTab("materials")}>
+                        Add notes
+                      </button>
+                      <button className="text-action" onClick={() => setActiveTab("flashcards")}>
+                        Make recall cards
+                      </button>
                     </div>
+                    <div className="suggestion-list">
+                      <button onClick={() => handleAsk("What is Kepler's First Law and how does eccentricity affect it?")}>
+                        Explain Kepler&apos;s first law
+                      </button>
+                      <button onClick={() => handleAsk("Explain the relationship between orbital period and semi-major axis in Kepler's Third Law")}>
+                        Walk through the third law
+                      </button>
+                      <button onClick={() => handleAsk("What is the difference between perihelion and aphelion speed?")}>
+                        Contrast perihelion and aphelion
+                      </button>
+                      <button
+                        onClick={() =>
+                          handleAsk(
+                            "What is the NASA Kepler space telescope and why was the mission retired?",
+                            { sourceMode: "web" }
+                          )
+                        }
+                      >
+                        Look up the Kepler mission on the academic web
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {messages.filter((m) => m.id !== "welcome").map((msg) => (
+                  <div key={msg.id} className={`message-card ${msg.sender === "user" ? "from-student" : "from-tutor"}`}>
                     <div className={`message-bubble ${msg.sender === "user" ? "user-bubble" : ""}`}>
                       <div className="message-meta">
-                        <span className="author-name">{msg.sender === "user" ? "Student" : "Study Tutor"}</span>
-                        <span>{msg.timestamp}</span>
+                        <span className="author-name">{msg.sender === "user" ? "You" : "Tutor"}</span>
                       </div>
 
-                      <div className="message-content">{msg.text}</div>
-
-                      {/* Cited Sources List */}
-                      {msg.sources && msg.sources.length > 0 && (
-                        <div className="citations-footer">
-                          <span className="citations-label">Sources:</span>
-                          {msg.sources.map((src, i) => (
-                            <button
-                              key={i}
-                              className="citation-pill"
-                              onClick={() => {
-                                const chunkMatch = msg.chunks?.find((c) =>
-                                  src.includes(c.source || c.metadata?.source || "")
-                                );
-                                setSelectedCitation(chunkMatch || { source: src, preview: "Cited in generated response." });
-                              }}
-                            >
-                              <IconBook />
-                              <span>{src}</span>
-                            </button>
-                          ))}
+                      {msg.sender === "tutor" && msg.grounding && (
+                        <div className={`grounding-banner grounding-${msg.grounding}`}>
+                          {msg.grounding === "course" &&
+                            "From your course materials. Each citation is a file and page in the index."}
+                          {msg.grounding === "web" &&
+                            "From academic web results via Tavily, not from your syllabus. Upload notes for page citations."}
+                          {msg.grounding === "general" &&
+                            "No matching course notes. This is general tutoring, not a page-cited answer. Upload a lecture PDF for syllabus citations."}
                         </div>
                       )}
 
+                      {msg.sender === "tutor" ? (
+                        <div className="message-content markdown-body">
+                          <ReactMarkdown
+                            remarkPlugins={[remarkGfm]}
+                            components={{
+                              a: ({ href, children }) => {
+                                if (href?.startsWith("#ref-")) {
+                                  const ref = msg.references?.find((item) => item.n === Number(href.slice(5)));
+                                  return (
+                                    <button
+                                      type="button"
+                                      className="cite-num"
+                                      onClick={() => ref && openReference(ref)}
+                                    >
+                                      {children}
+                                    </button>
+                                  );
+                                }
+                                return (
+                                  <a href={href} target="_blank" rel="noreferrer">
+                                    {children}
+                                  </a>
+                                );
+                              },
+                            }}
+                          >
+                            {linkCitations(prepareTutorMarkdown(msg.text))}
+                          </ReactMarkdown>
+                        </div>
+                      ) : (
+                        <div className="message-content">{msg.text}</div>
+                      )}
+
+                      {/* Cited Sources List */}
+                      {msg.references && msg.references.length > 0 && (
+                        <ol className="reference-list">
+                          {msg.references.map((ref) => (
+                            <li key={ref.n} id={`ref-${msg.id}-${ref.n}`}>
+                              <button type="button" className="reference-link" onClick={() => openReference(ref)}>
+                                {ref.label}
+                              </button>
+                            </li>
+                          ))}
+                        </ol>
+                      )}
+
                       {/* Latency & Model Footer */}
-                      {msg.durationMs !== undefined && (
-                        <div style={{ marginTop: "10px", fontSize: "11.5px", color: "var(--text-muted)" }}>
-                          Generated in {msg.durationMs}ms via {msg.model || status.provider}
+                      {msg.durationMs !== undefined && msg.model && (
+                        <div className="answer-footnote">
+                          {msg.model}
+                          {msg.provider ? ` · ${msg.provider}` : ""}
                         </div>
                       )}
                     </div>
                   </div>
                 ))}
                 {isGenerating && (
-                  <div className="message-card">
-                    <div className="avatar-icon tutor-avatar">
-                      <IconTutor />
-                    </div>
+                  <div className="message-card from-tutor">
                     <div className="message-bubble">
-                      <div style={{ display: "flex", alignItems: "center", gap: "8px", color: "var(--text-secondary)" }}>
+                      <div className="thinking-line">
                         <span className="dot-pulse" />
-                        <span>Searching materials and generating grounded answer...</span>
+                        <span>Reading your notes</span>
                       </div>
                     </div>
                   </div>
@@ -756,92 +938,78 @@ export default function StudyAssistantApp() {
               </div>
 
               {/* Chat Input Controls */}
-              <div className="chat-controls-bar">
-                <div className="input-options-row">
-                  <div className="strategy-group">
-                    <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>Augmentation:</span>
-                    <button
-                      className={`strategy-btn ${augmentMode === "expand" ? "active" : ""}`}
-                      onClick={() => setAugmentMode("expand")}
-                      title="Multi-Query: Generates variations to capture diverse technical terminology"
-                    >
-                      Multi-Query
-                    </button>
-                    <button
-                      className={`strategy-btn ${augmentMode === "rewrite" ? "active" : ""}`}
-                      onClick={() => setAugmentMode("rewrite")}
-                      title="Academic Rewrite: Converts informal queries into formal academic terminology"
-                    >
-                      Rewrite
-                    </button>
-                    <button
-                      className={`strategy-btn ${augmentMode === "hyde" ? "active" : ""}`}
-                      onClick={() => setAugmentMode("hyde")}
-                      title="Deep Search: Passage-level semantic matching for complex questions"
-                    >
-                      Deep Search
-                    </button>
-                    <button
-                      className={`strategy-btn ${useWeb ? "active" : ""}`}
-                      onClick={() => setUseWeb(!useWeb)}
-                      title="Web Search: Retrieve from Tavily web search in addition to course materials"
-                    >
-                      Web Search
-                    </button>
+              <div className="composer">
+                <textarea
+                  className="chat-textarea"
+                  placeholder={
+                    sourceMode === "notes"
+                      ? "Ask about your notes"
+                      : sourceMode === "web"
+                        ? "Ask the academic web"
+                        : "Ask your notes and the academic web"
+                  }
+                  value={inputQuery}
+                  onChange={(e) => setInputQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      handleAsk();
+                    }
+                  }}
+                  rows={2}
+                  disabled={isGenerating}
+                  id="chat-input"
+                />
+                <div className="composer-bar">
+                  <div className="source-switch" role="group" aria-label="Where to search">
+                    {(["notes", "web", "both"] as const).map((mode) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        className={sourceMode === mode ? "on" : ""}
+                        onClick={() => setSourceMode(mode)}
+                      >
+                        {mode === "notes" ? "Notes" : mode === "web" ? "Web" : "Both"}
+                      </button>
+                    ))}
                   </div>
-
-                  <div style={{ fontSize: "11.5px", color: "var(--text-muted)" }}>
-                    Press Enter to send
+                  <div className="search-menu">
+                    <button
+                      type="button"
+                      className="search-menu-button"
+                      aria-expanded={searchMenuOpen}
+                      onClick={() => setSearchMenuOpen((open) => !open)}
+                    >
+                      {searchChoices.find((choice) => choice.id === augmentMode)?.label}
+                    </button>
+                    {searchMenuOpen && (
+                      <div className="search-menu-list" role="listbox">
+                        {searchChoices.map((choice) => (
+                          <button
+                            key={choice.id}
+                            type="button"
+                            role="option"
+                            aria-selected={augmentMode === choice.id}
+                            className={augmentMode === choice.id ? "on" : ""}
+                            onClick={() => {
+                              setAugmentMode(choice.id);
+                              setSearchMenuOpen(false);
+                            }}
+                          >
+                            {choice.label}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                </div>
-
-                <div className="input-field-row">
-                  <textarea
-                    className="chat-textarea"
-                    placeholder="Ask a question grounded in your course materials..."
-                    value={inputQuery}
-                    onChange={(e) => setInputQuery(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && !e.shiftKey) {
-                        e.preventDefault();
-                        handleAsk();
-                      }
-                    }}
-                    rows={2}
-                    disabled={isGenerating}
-                    id="chat-input"
-                  />
                   <button
                     className="send-btn"
                     onClick={() => handleAsk()}
                     disabled={isGenerating || !inputQuery.trim()}
                     id="send-button"
+                    type="button"
                   >
-                    <span>Ask</span>
-                    <IconArrowRight />
-                  </button>
-                </div>
-
-                {/* Prompt Starters */}
-                <div className="prompt-starters">
-                  <span style={{ fontSize: "11.5px", color: "var(--text-muted)", alignSelf: "center" }}>Quick Starters:</span>
-                  <button
-                    className="starter-pill"
-                    onClick={() => handleAsk("What is Kepler's First Law and how does eccentricity affect it?")}
-                  >
-                    Kepler's First Law
-                  </button>
-                  <button
-                    className="starter-pill"
-                    onClick={() => handleAsk("Explain the relationship between orbital period and semi-major axis in Kepler's Third Law")}
-                  >
-                    Third Law Formula
-                  </button>
-                  <button
-                    className="starter-pill"
-                    onClick={() => handleAsk("What is the difference between perihelion and aphelion speed?")}
-                  >
-                    Perihelion vs Aphelion
+                    Ask
                   </button>
                 </div>
               </div>
@@ -1139,6 +1307,21 @@ export default function StudyAssistantApp() {
                 Document: {selectedCitation.source || selectedCitation.metadata?.source || "Unknown"}
                 {selectedCitation.page && ` · Page ${selectedCitation.page}`}
               </span>
+              {(selectedCitation.source_type === "web" || String(selectedCitation.source || "").startsWith("http")) && (
+                <span
+                  style={{
+                    fontSize: "11px",
+                    fontWeight: 600,
+                    padding: "2px 8px",
+                    borderRadius: "4px",
+                    background: "rgba(16, 185, 129, 0.15)",
+                    color: "#10b981",
+                    border: "1px solid rgba(16, 185, 129, 0.3)",
+                  }}
+                >
+                  Tavily Web
+                </span>
+              )}
               {(selectedCitation.metadata?.has_visuals || (selectedCitation.preview || selectedCitation.text || "").includes("[Visual Diagram") || (selectedCitation.preview || selectedCitation.text || "").includes("[Lecture Slide")) && (
                 <span
                   style={{

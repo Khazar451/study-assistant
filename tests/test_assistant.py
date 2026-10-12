@@ -159,6 +159,8 @@ def test_ask_non_streaming(assistant, mock_subcomponents):
     mock_subcomponents["generator"].generate.assert_called_once_with(
         query="How do planets orbit?",
         context="[1] (kepler.pdf, p. 5): Kepler discovered...",
+        grounding="course",
+        allowed_sources=[],
     )
 
     assert response["answer"] == "Planets orbit in ellipses [1]."
@@ -183,6 +185,7 @@ def test_ask_streaming(assistant, mock_subcomponents):
     mock_subcomponents["generator"].generate_stream.assert_called_once_with(
         query="What is calculus?",
         context="Formatted context",
+        grounding="course",
     )
 
 

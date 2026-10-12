@@ -2,9 +2,9 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Study Assistant · Grounded Academic RAG Tutor",
+  title: "Study Assistant",
   description:
-    "Zero-hallucination, high-precision academic question answering and active recall exam tutor powered by NVIDIA NIM and Nebius AI Studio.",
+    "Zero-hallucination, high-precision academic question answering and active recall exam tutor powered by NVIDIA Nemotron on Nebius Token Factory.",
 };
 
 export default function RootLayout({

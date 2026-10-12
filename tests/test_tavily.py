@@ -1,7 +1,7 @@
 from unittest.mock import MagicMock, patch
 import pytest
 
-from src.retrieval.tavily_search import TavilySearchClient
+from src.retrieval.tavily_search import TavilySearchClient, is_academic_source
 from src.assistant import StudyAssistant
 
 
@@ -68,12 +68,45 @@ def test_tavily_search_live_mocked_api_response():
         assert chunks[0]["metadata"]["domain"] == "arxiv.org"
         assert chunks[0]["metadata"]["source_type"] == "web"
         assert "Direct Preference Optimization" in chunks[0]["text"]
-        mock_instance.search.assert_called_once_with(
-            query="DPO algorithm",
-            search_depth="basic",
-            max_results=1,
-            include_answer=False,
-        )
+        mock_instance.search.assert_called_once()
+        call_kwargs = mock_instance.search.call_args.kwargs
+        assert call_kwargs["query"] == "DPO algorithm"
+        assert call_kwargs["max_results"] == 1
+        assert "arxiv.org" in call_kwargs["include_domains"]
+
+
+def test_tavily_filters_non_academic_domains():
+    with patch("src.retrieval.tavily_search.TavilyClient") as mock_cls:
+        mock_instance = MagicMock()
+        mock_cls.return_value = mock_instance
+        mock_instance.search.return_value = {
+            "results": [
+                {
+                    "url": "https://clickbait.example.com/kepler",
+                    "title": "You won't believe Kepler",
+                    "content": "Unreliable summary.",
+                    "score": 0.99,
+                },
+                {
+                    "url": "https://en.wikipedia.org/wiki/Johannes_Kepler",
+                    "title": "Johannes Kepler",
+                    "content": "German astronomer.",
+                    "score": 0.80,
+                },
+            ]
+        }
+        client = TavilySearchClient(api_key="tvly-key", mock_mode=False)
+        chunks = client.search("Kepler", max_results=5)
+        assert len(chunks) == 1
+        assert "wikipedia.org" in chunks[0]["metadata"]["source"]
+
+
+def test_is_academic_source():
+    assert is_academic_source("https://arxiv.org/abs/2305.18290")
+    assert is_academic_source("https://en.wikipedia.org/wiki/Kepler")
+    assert is_academic_source("https://www.nasa.gov/kepler")
+    assert is_academic_source("https://ocw.mit.edu/courses")
+    assert not is_academic_source("https://random-blog.com/post")
 
 
 def test_tavily_search_api_exception_fallback():

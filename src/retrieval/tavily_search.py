@@ -12,6 +12,41 @@ except ImportError:
     TavilyClient = None  # type: ignore
 
 
+ACADEMIC_HOSTS = {
+    "arxiv.org",
+    "wikipedia.org",
+    "britannica.com",
+    "nature.com",
+    "science.org",
+    "springer.com",
+    "ieee.org",
+    "acm.org",
+    "nasa.gov",
+    "nih.gov",
+    "who.int",
+    "un.org",
+}
+ACADEMIC_HOST_SUFFIXES = (".edu", ".gov", ".ac.uk", ".ac.jp")
+TAVILY_INCLUDE_DOMAINS = [
+    "arxiv.org",
+    "wikipedia.org",
+    "britannica.com",
+    "nature.com",
+    "nasa.gov",
+    "nih.gov",
+]
+
+
+def is_academic_source(url: str) -> bool:
+    """Keep Tavily results on academic / governmental hosts."""
+    host = urlparse(url).netloc.lower().removeprefix("www.")
+    if not host:
+        return False
+    if any(host == allowed or host.endswith("." + allowed) for allowed in ACADEMIC_HOSTS):
+        return True
+    return host.endswith(ACADEMIC_HOST_SUFFIXES)
+
+
 class TavilySearchClient:
     """Client for retrieving and formatting web search results via Tavily API.
 
@@ -19,6 +54,7 @@ class TavilySearchClient:
     1. Real-time web search with clean content extraction.
     2. Conversion of search results to standard RAG chunk dictionaries.
     3. Seamless offline mock mode for continuous integration testing without API calls.
+    4. Academic-domain filtering for the Nebius x NVIDIA / Tavily prize track.
     """
 
     def __init__(
@@ -80,6 +116,7 @@ class TavilySearchClient:
                 search_depth=search_depth,
                 max_results=max_results,
                 include_answer=include_answer,
+                include_domains=TAVILY_INCLUDE_DOMAINS,
             )
             raw_results = response.get("results", [])
         except Exception:
@@ -91,6 +128,9 @@ class TavilySearchClient:
             title = res.get("title", "Web Source")
             content = res.get("content", "").strip()
             score = float(res.get("score", 0.7))
+
+            if not is_academic_source(url):
+                continue
 
             domain = urlparse(url).netloc or "web"
 

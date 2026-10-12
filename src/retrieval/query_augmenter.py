@@ -3,6 +3,8 @@ from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 from openai import OpenAI
 
+from src import providers
+
 # Automatically load environment variables from .env.local or .env if present
 load_dotenv(".env.local")
 load_dotenv()
@@ -17,8 +19,8 @@ class QueryAugmenter:
     3. HyDE (Hypothetical Document Embeddings): Synthesizes a hypothetical answer passage for passage-to-passage search.
     """
 
-    DEFAULT_MODEL = "meta/llama-3.2-11b-vision-instruct"
-    DEFAULT_BASE_URL = "https://integrate.api.nvidia.com/v1"
+    DEFAULT_MODEL = providers.NVIDIA_DEFAULT_MODEL
+    DEFAULT_BASE_URL = providers.NVIDIA_BASE_URL
 
     def __init__(
         self,
@@ -30,20 +32,27 @@ class QueryAugmenter:
         """Initialize the QueryAugmenter client.
 
         Args:
-            api_key: NVIDIA NIM or OpenAI-compatible API key.
+            api_key: Nebius Token Factory, NVIDIA NIM, or OpenAI-compatible API key.
             base_url: Base endpoint URL for the LLM API.
-            model: Model identifier (e.g. meta/llama-3.1-8b-instruct).
+            model: Model identifier (e.g. nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B).
             temperature: Sampling temperature for generation (lower = more deterministic).
         """
-        self.api_key = api_key or os.getenv("NVIDIA_API_KEY")
-        if not self.api_key:
-            raise ValueError(
-                "NVIDIA_API_KEY is not set. Please set the environment variable "
-                "or pass api_key to QueryAugmenter."
-            )
-
-        self.base_url = base_url or os.getenv("NVIDIA_BASE_URL", self.DEFAULT_BASE_URL)
-        self.model = model or os.getenv("LLM_MODEL", self.DEFAULT_MODEL)
+        self.extra_body: Optional[Dict[str, Any]] = None
+        if api_key:
+            self.api_key = api_key
+            self.base_url = base_url or os.getenv("NVIDIA_BASE_URL", self.DEFAULT_BASE_URL)
+            self.model = model or os.getenv("LLM_MODEL", self.DEFAULT_MODEL)
+        else:
+            resolved = providers.resolve_llm_provider("fast")
+            if resolved is None:
+                raise ValueError(
+                    "No API key found. Please set NEBIUS_API_KEY (Nebius Token Factory) or "
+                    "NVIDIA_API_KEY (NVIDIA NIM), or pass api_key to QueryAugmenter."
+                )
+            self.api_key = resolved.api_key
+            self.base_url = base_url or resolved.base_url
+            self.model = model or resolved.model
+            self.extra_body = resolved.extra_body
         self.temperature = temperature
 
         self.client = OpenAI(
@@ -80,8 +89,9 @@ class QueryAugmenter:
                 ],
                 temperature=self.temperature,
                 max_tokens=150,
+                extra_body=self.extra_body,
             )
-            rewritten = response.choices[0].message.content.strip().strip('"\'')
+            rewritten = providers.strip_reasoning(response.choices[0].message.content or "").strip('"\'')
             return rewritten if rewritten else clean_query
         except Exception:
             # Fall back to original query if LLM service encounters issues
@@ -121,8 +131,9 @@ class QueryAugmenter:
                 ],
                 temperature=max(0.5, self.temperature),
                 max_tokens=250,
+                extra_body=self.extra_body,
             )
-            raw_text = response.choices[0].message.content.strip()
+            raw_text = providers.strip_reasoning(response.choices[0].message.content or "")
 
             # Clean each line: strip numbering, bullet markers, whitespace
             variations = []
@@ -181,8 +192,9 @@ class QueryAugmenter:
                 ],
                 temperature=self.temperature,
                 max_tokens=300,
+                extra_body=self.extra_body,
             )
-            passage = response.choices[0].message.content.strip()
+            passage = providers.strip_reasoning(response.choices[0].message.content or "")
             return passage if passage else clean_query
         except Exception:
             return clean_query

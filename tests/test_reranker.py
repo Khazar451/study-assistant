@@ -38,6 +38,20 @@ def test_missing_api_keys_raises_value_error(monkeypatch):
         StudyReranker()
 
 
+def test_env_prefers_nebius_for_llm_and_nvidia_for_ranking_api(monkeypatch):
+    monkeypatch.setenv("NVIDIA_API_KEY", "nv-key")
+    monkeypatch.setenv("NEBIUS_API_KEY", "neb-key")
+    monkeypatch.delenv("NEBIUS_BASE_URL", raising=False)
+    monkeypatch.delenv("NEBIUS_FAST_MODEL", raising=False)
+
+    reranker = StudyReranker(client=MagicMock())
+    assert reranker.llm_api_key == "neb-key"
+    assert "tokenfactory.nebius.com" in reranker.llm_base_url
+    assert reranker.llm_model == "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B"
+    assert reranker.ranking_api_key == "nv-key"
+    assert reranker.llm_extra_body == {"chat_template_kwargs": {"enable_thinking": False}}
+
+
 def test_explicit_api_key_override(monkeypatch):
     monkeypatch.setenv("NVIDIA_API_KEY", "env_key")
     reranker = StudyReranker(api_key="explicit_key", client=MagicMock())

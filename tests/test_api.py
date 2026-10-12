@@ -61,12 +61,15 @@ def client(mock_assistant):
 
 
 def test_api_status(client, mock_assistant):
+    mock_assistant.tavily = MagicMock()
+    mock_assistant.tavily.is_available = True
     res = client.get("/api/status")
     assert res.status_code == 200
     data = res.json()
     assert data["status"] == "ready"
     assert data["indexed_chunks"] == 42
     assert "provider" in data
+    assert data["tavily_available"] is True
 
 
 def test_api_documents(client, mock_assistant):

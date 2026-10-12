@@ -10,12 +10,14 @@ import uuid
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 
 from src.assistant import StudyAssistant
+from src.generation.tutor_format import allowed_source_keys, bind_numbered_citations, infer_grounding, polish_tutor_answer
+from src.providers import PROVIDER_LABELS
 
 # Load environment configuration
 load_dotenv(".env.local")
@@ -246,19 +248,125 @@ def get_status() -> Dict[str, Any]:
 
     nvidia_key = bool(os.getenv("NVIDIA_API_KEY"))
     nebius_key = bool(os.getenv("NEBIUS_API_KEY"))
+    tavily = getattr(assistant, "tavily", None)
+    tavily_available = bool(getattr(tavily, "is_available", False)) if tavily is not None else False
 
-    active_provider = "NVIDIA NIM" if nvidia_key else ("Nebius AI Studio" if nebius_key else "Mock / Offline")
+    generator = assistant.generator
+    augmenter = getattr(assistant.retriever, "augmenter", None)
 
     return {
         "status": "ready",
-        "provider": active_provider,
+        "provider": _provider_label(generator),
         "nvidia_configured": nvidia_key,
         "nebius_configured": nebius_key,
+        "tavily_configured": bool(os.getenv("TAVILY_API_KEY")),
+        "tavily_available": tavily_available,
         "indexed_chunks": chunk_count,
         "persist_directory": assistant.persist_directory,
-        "generation_model": getattr(assistant.generator, "model", "nvidia/Llama-3.1-Nemotron-70B-Instruct-HF"),
+        "generation_model": _str_attr(generator, "model"),
+        "augment_model": _str_attr(augmenter, "model"),
+        "rerank_model": _str_attr(assistant.reranker, "llm_model"),
+        "embedding_model": _str_attr(getattr(assistant, "embedder", None), "model"),
         "rerank_mode": getattr(assistant.reranker, "mode", "llm_listwise"),
     }
+
+
+def _str_attr(obj: Any, name: str) -> str:
+    value = getattr(obj, name, "")
+    return value if isinstance(value, str) else ""
+
+
+def _source_mode(source_mode: str, use_web: bool, fallback_to_web: bool) -> str:
+    """Honor an explicit student choice. Legacy clients still use the old flags."""
+    if source_mode in {"notes", "web", "both"}:
+        return source_mode
+    if use_web and fallback_to_web:
+        return "both"
+    if use_web:
+        return "web"
+    if fallback_to_web:
+        return "both"
+    return "notes"
+
+
+def _retrieve_for_mode(
+    assistant: Any,
+    query: str,
+    mode: str,
+    top_k: int,
+    top_n: int,
+    augment: bool,
+    augment_mode: str,
+) -> List[Dict[str, Any]]:
+    tavily = getattr(assistant, "tavily", None)
+    web_ok = bool(tavily and getattr(tavily, "is_available", False))
+
+    if mode == "web":
+        if not web_ok:
+            return []
+        return tavily.search(query=query.strip(), max_results=top_n)
+
+    if mode == "notes" and assistant.count() == 0:
+        return []
+
+    chunks = assistant.search(
+        query=query,
+        top_k=top_k,
+        top_n=top_n,
+        augment=augment,
+        augment_mode=augment_mode,
+        use_web=mode == "both" and web_ok,
+    )
+    return chunks
+
+
+def _empty_retrieval_notice(mode: str) -> str:
+    if mode == "web":
+        return "No academic web page matched this question. Try different wording, or switch the source to your notes."
+    if mode == "both":
+        return "Neither your notes nor the academic web had a verified passage for this question."
+    return (
+        "Based on the available course materials, there is not enough verified information to answer this question. "
+        "Please upload the relevant lecture slides or textbook chapters."
+    )
+
+
+def _stream_answer(assistant: Any, query: str, chunks: List[Dict[str, Any]], grounding: str):
+    """Stream tokens, then replace the answer with a citation-checked final draft."""
+    context = assistant.retriever.format_context(chunks) if chunks else ""
+    stream = assistant.generator.generate_stream(query=query.strip(), context=context, grounding=grounding)
+    full_text: List[str] = []
+    for token in stream:
+        full_text.append(token)
+        yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
+
+    answer = polish_tutor_answer(
+        "".join(full_text),
+        allowed_sources=allowed_source_keys(chunks, context),
+        grounding=grounding,
+    )
+    references: List[Dict[str, Any]] = []
+    if grounding != "general":
+        answer, references = bind_numbered_citations(answer, chunks)
+    sources = [ref["label"] for ref in references]
+    done_event = {
+        "type": "done",
+        "answer": answer,
+        "sources": sources,
+        "references": references,
+        "grounding": grounding,
+        "model": getattr(assistant.generator, "model", ""),
+        "provider": _provider_label(assistant.generator),
+    }
+    yield f"data: {json.dumps(done_event)}\n\n"
+
+
+def _provider_label(generator: Any) -> str:
+    label = getattr(generator, "provider_label", None)
+    if isinstance(label, str) and label:
+        return label
+    provider = getattr(generator, "provider", "")
+    return PROVIDER_LABELS.get(provider, provider) if isinstance(provider, str) else ""
 
 
 @app.get("/api/documents")
@@ -467,7 +575,10 @@ def ingest_sample() -> Dict[str, Any]:
         raise HTTPException(status_code=404, detail="Sample material file not found.")
 
     assistant = get_assistant()
-    result = assistant.ingest(sample_path)
+    try:
+        result = assistant.ingest(sample_path)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Ingestion failed: {exc}") from exc
     return {
         "success": True,
         "material": "Kepler's Laws of Planetary Motion",
@@ -501,6 +612,7 @@ def ask_question(req: AskRequest) -> Dict[str, Any]:
 
     return {
         **res,
+        "provider_label": _provider_label(assistant.generator),
         "duration_ms": duration_ms,
     }
 
@@ -533,6 +645,7 @@ def ask_stream(
     augment_mode: str = Query("expand"),
     use_web: bool = Query(False),
     fallback_to_web: bool = Query(True),
+    source_mode: str = Query("", description="notes, web, or both. Overrides use_web when set."),
 ):
     """Server-Sent Events (SSE) token-by-token streaming endpoint for real-time typewriter UI."""
     assistant = get_assistant()
@@ -545,47 +658,21 @@ def ask_stream(
                 yield f"data: {json.dumps({'type': 'done', 'sources': []})}\n\n"
                 return
 
-            if assistant.count() == 0:
-                if (use_web or fallback_to_web) and getattr(assistant, 'tavily', None) and assistant.tavily.is_available:
-                    chunks = assistant.tavily.search(query=query.strip(), max_results=top_n)
-                    if chunks:
-                        chunk_previews = [
-                            {
-                                "source": c.get("metadata", {}).get("source", "Unknown"),
-                                "page": c.get("metadata", {}).get("page", 1),
-                                "score": c.get("similarity_score", 0.0),
-                                "preview": c.get("text", "")[:180] + "...",
-                            }
-                            for c in chunks
-                        ]
-                        yield f"data: {json.dumps({'type': 'chunks', 'chunks': chunk_previews})}\n\n"
-                        context = assistant.retriever.format_context(chunks)
-                        stream = assistant.generator.generate_stream(query=query.strip(), context=context)
-                        for token in stream:
-                            yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
-                        sources = [c.get("metadata", {}).get("source", "web") for c in chunks]
-                        yield f"data: {json.dumps({'type': 'done', 'sources': sources})}\n\n"
-                        return
-
-                yield f"data: {json.dumps({'type': 'token', 'token': 'Vector database is empty. Please ingest course materials first.'})}\n\n"
-                yield f"data: {json.dumps({'type': 'done', 'sources': []})}\n\n"
-                return
-
-            # Retrieve and rerank
-            chunks = assistant.search(
+            mode = _source_mode(source_mode, use_web, fallback_to_web)
+            chunks = _retrieve_for_mode(
+                assistant,
                 query=query,
+                mode=mode,
                 top_k=top_k,
                 top_n=top_n,
                 augment=augment,
                 augment_mode=augment_mode,
-                use_web=use_web,
             )
-
-            # Fallback to Tavily if local search returned no relevant chunks and fallback_to_web is enabled
-            if not chunks and fallback_to_web and not use_web and getattr(assistant, 'tavily', None) and assistant.tavily.is_available:
-                web_chunks = assistant.tavily.search(query=query.strip(), max_results=top_n)
-                if web_chunks:
-                    chunks = assistant.reranker.rerank(query=query.strip(), chunks=web_chunks, top_n=top_n)
+            if not chunks:
+                notice = _empty_retrieval_notice(mode)
+                yield f"data: {json.dumps({'type': 'token', 'token': notice})}\n\n"
+                yield f"data: {json.dumps({'type': 'done', 'answer': notice, 'sources': [], 'references': [], 'grounding': mode if mode != 'both' else 'course'})}\n\n"
+                return
 
             # Send candidate chunks event
             chunk_previews = [
@@ -594,26 +681,12 @@ def ask_stream(
                     "page": c.get("metadata", {}).get("page", 1),
                     "score": c.get("rerank_score", c.get("similarity", 0.0)),
                     "preview": c.get("text", "")[:180] + "...",
+                    "source_type": c.get("metadata", {}).get("source_type", "document"),
                 }
                 for c in chunks
             ]
             yield f"data: {json.dumps({'type': 'chunks', 'chunks': chunk_previews})}\n\n"
-
-            # Stream generation
-            context = assistant.retriever.format_context(chunks)
-            stream = assistant.generator.generate_stream(query=query.strip(), context=context)
-
-            full_text = []
-            for token in stream:
-                full_text.append(token)
-                yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
-
-            answer_content = "".join(full_text)
-            # Extract citations from generated text
-            citations = re.findall(r"\[Source:\s*([^,\]]+),\s*Page:\s*(\d+)\]", answer_content)
-            unique_sources = sorted(list(set(f"{src} (p. {page})" for src, page in citations)))
-
-            yield f"data: {json.dumps({'type': 'done', 'sources': unique_sources, 'model': getattr(assistant.generator, 'model', '')})}\n\n"
+            yield from _stream_answer(assistant, query, chunks, infer_grounding(chunks))
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
 
@@ -626,6 +699,17 @@ def ask_stream(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@app.get("/api/materials/file")
+def get_material_file(path: str = Query(..., description="Absolute path of an indexed course file")):
+    """Serve a course file so a citation can open the PDF at a page."""
+    target = Path(path).resolve()
+    roots = [Path("./data/uploads").resolve(), Path("./sample_materials").resolve()]
+    allowed = target.is_file() and any(target == root or root in target.parents for root in roots)
+    if not allowed:
+        raise HTTPException(status_code=404, detail="File is not in the course library.")
+    return FileResponse(target)
 
 
 @app.post("/api/flashcards")

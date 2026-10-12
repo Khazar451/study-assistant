@@ -8,7 +8,7 @@
 [![Nebius AI Studio](https://img.shields.io/badge/Nebius-AI%20Studio%20Cloud-00F5D4.svg)](https://studio.nebius.ai/)
 [![Global AI Hackathon](https://img.shields.io/badge/Nebius%20x%20NVIDIA-Global%20AI%20Hackathon-76B900.svg?logo=nvidia&logoColor=white)](https://github.com/Khazar451/study-assistant)
 [![Vector DB](https://img.shields.io/badge/ChromaDB-Persistent%20HNSW-FF6B6B.svg)](https://www.trychroma.com/)
-[![Tests: 143 Passing](https://img.shields.io/badge/tests-143%20passing-brightgreen.svg)](tests/)
+[![Tests: 147 Passing](https://img.shields.io/badge/tests-147%20passing-brightgreen.svg)](tests/)
 [![CI Status](https://github.com/Khazar451/study-assistant/actions/workflows/test.yml/badge.svg)](https://github.com/Khazar451/study-assistant/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -17,6 +17,16 @@
 ---
 
 </div>
+
+## For judges
+
+- **Track:** Best Apps and Agents. Also eligible for Best Use of Tavily.
+- **Required runtime:** Chat completions go to **Nebius Token Factory** (`https://api.tokenfactory.nebius.com/v1/`). Answers use NVIDIA **Nemotron 3 Super** (`nvidia/nemotron-3-super-120b-a12b`). Query rewrite and rerank use NVIDIA **Nemotron 3 Nano** (`nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B`). Embeddings and slide vision stay on NVIDIA NIM (`nvidia/llama-nemotron-embed-vl-1b-v2`).
+- **5-minute run:** copy `.env.example` to `.env.local`, set `NEBIUS_API_KEY` and `NVIDIA_API_KEY`, then `bin/study-assistant`. Open the printed frontend URL, load the Kepler sample under Course Materials, ask "What is Kepler's First Law?". The header must read **Nebius Token Factory**. Turn on **Tavily Web** (or use the Kepler mission starter) to search arXiv / Wikipedia / NASA when notes are not enough.
+- **Built during the submission window (opened 26 Aug 2026):** grounded RAG tutor, Token Factory Nemotron routing, Tavily academic-domain search, Next.js + FastAPI UI, tests and CI.
+- **Benchmark table** later in this README is from `python -m evaluation.benchmark --mock` (offline, no live API).
+
+---
 
 ## 📌 Table of Contents
 - [1. Executive Summary & Problem Statement](#1-executive-summary--problem-statement)
@@ -57,7 +67,7 @@ Modern university students and researchers are routinely overwhelmed by hundreds
 **Study Assistant** is an end-to-end, grounded **Retrieval-Augmented Generation (RAG)** platform designed specifically for higher education. It transforms dense course documents into an interactive, pedagogical AI tutor that guarantees:
 - **Strict Grounding:** Zero outside knowledge assumption; answers are derived exclusively from course materials.
 - **Page-Level Source Attribution:** Every claim is paired with inline citations `[Source: <filename>, Page: <page>]`.
-- **Hybrid Infrastructure Resilience:** Primary inference powered by **NVIDIA NIM** (high-throughput microservices) with an automated fallback to **Nebius AI Studio Token Factory** (`nvidia/Llama-3.1-Nemotron-70B-Instruct-HF`).
+- **NVIDIA Nemotron on Nebius Token Factory:** Tutor answers run on `nvidia/nemotron-3-super-120b-a12b`, while query augmentation and reranking run on `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B`, both served through **Nebius Token Factory**. Embeddings (`nvidia/llama-nemotron-embed-vl-1b-v2`) and slide vision run on **NVIDIA NIM**, which is also the LLM fallback when no Nebius key is set.
 - **Query Intelligence:** Query rewriting, multi-query expansion, and Hypothetical Document Embeddings (HyDE) to bridge student vocabulary with formal academic literature.
 
 ---
@@ -157,7 +167,7 @@ The generation layer ensures student answers are pedagogical, structured, and st
 
 | Feature | Implementation Details |
 | :--- | :--- |
-| **Dual Cloud Infrastructure** | Configured with automatic priority: checks `NVIDIA_API_KEY` for NVIDIA NIM endpoints first; if absent, gracefully falls back to `NEBIUS_API_KEY` using Nebius AI Studio's `nvidia/Llama-3.1-Nemotron-70B-Instruct-HF`. |
+| **Dual Cloud Infrastructure** | Provider resolution lives in `src/providers.py`. When `NEBIUS_API_KEY` is set, all chat completions go to Nebius Token Factory (`https://api.tokenfactory.nebius.com/v1/`) with NVIDIA Nemotron models; otherwise they fall back to NVIDIA NIM via `NVIDIA_API_KEY`. The active provider and model are shown in the UI header and under every answer. |
 | **Strict Anti-Hallucination Guardrails** | System prompt instructs the model to rely solely on context excerpts. If context does not contain sufficient facts, the model explicitly outputs: *"Based on the provided study materials, there is not enough information to answer this question."* |
 | **Inline Citation Extraction** | Formats answers with `[Source: <filename>, Page: <page>]` markers and validates cited files against the retrieved context using regex parsing. |
 | **Streaming Output** | Implements `generate_stream()` returning a token iterator for real-time typewriter animations in frontend interfaces. |
@@ -182,7 +192,7 @@ ightarrow$ grounded generation with page-level citations. Supports real-time tok
 
 ### 3.5 Automated Testing & CI/CD Pipeline (`tests/` & `.github/`)
 
-- **14 Comprehensive Unit & Integration Test Suites (143 Tests Passing in ~1.5s):**
+- **14 Comprehensive Unit & Integration Test Suites (147 Tests Passing in ~1.5s):**
   - `tests/test_loader.py`: Validates PDF page extraction, image loading, text reading, and unsupported format rejections (7 tests).
   - `tests/test_vision.py`: Tests NVIDIA NIM vision model integration, dimension/noise filtering, RGBA transparency, and SHA-256 caching (9 tests).
   - `tests/test_chunker.py`: Tests boundary preservation, overlap logic, and empty input handling (5 tests).
@@ -198,7 +208,7 @@ ightarrow$ grounded generation with page-level citations. Supports real-time tok
   - `tests/test_api.py`: Validates FastAPI status, document inspection, background job processing, image and sample ingestion, ask, SSE streaming, search, flashcard generation, and Prometheus metrics (14 tests).
   - `tests/test_tavily.py`: Validates Tavily client initialization, domain filtering, mock mode, and hybrid web RAG fallback (9 tests).
 - **Continuous Integration (CI):**
-  - Configured via `.github/workflows/test.yml` running Pytest automatically on push and pull request against Python 3.11. All 143 tests run green on GitHub Actions without consuming live API credits.
+  - Configured via `.github/workflows/test.yml` running Pytest automatically on push and pull request against Python 3.11. All 147 tests run green on GitHub Actions without consuming live API credits.
 
 ### 3.6 Modern Web Application & REST API Layer (`frontend/` & `src/api/`)
 
@@ -327,7 +337,7 @@ study-assistant/
 │   └── generation/                  # Grounded LLM response generation
 │       ├── __init__.py
 │       └── generator.py             # Dual NVIDIA/Nebius LLM client & citation engine
-├── tests/                           # Complete test suite (143 passing tests)
+├── tests/                           # Complete test suite (147 passing tests)
 │   ├── conftest.py                  # Pytest fixtures & environment setup
 │   ├── test_api.py                  # FastAPI REST endpoints & SSE streaming (14 tests)
 │   ├── test_assistant.py            # Unit tests for Orchestrator & CLI (18 tests)
@@ -391,15 +401,17 @@ cp .env.example .env
 Populate your API keys:
 
 ```ini
-# Primary Provider: NVIDIA NIM
+# Primary LLM Provider: Nebius Token Factory (NVIDIA Nemotron)
+NEBIUS_API_KEY=your-nebius-token-factory-key-here
+NEBIUS_BASE_URL=https://api.tokenfactory.nebius.com/v1/
+NEBIUS_MODEL=nvidia/nemotron-3-super-120b-a12b
+NEBIUS_FAST_MODEL=nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B
+
+# NVIDIA NIM: embeddings, slide vision, and LLM fallback
 NVIDIA_API_KEY=nvapi-your-key-here
 NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
 EMBEDDING_MODEL=nvidia/llama-nemotron-embed-vl-1b-v2
-LLM_MODEL=meta/llama-3.2-11b-vision-instruct
-
-# Fallback Provider: Nebius AI Studio
-NEBIUS_API_KEY=your-nebius-key-here
-NEBIUS_BASE_URL=https://api.studio.nebius.ai/v1
+LLM_MODEL=meta/llama-3.2-11b-vision-instruct  # only used without NEBIUS_API_KEY
 ```
 
 ### 6.3 Unified CLI Usage (Chat, Ask & Ingest)
@@ -465,7 +477,7 @@ npm run dev
 
 ### 6.6 Running the Test Suite
 
-Execute the full suite of unit and integration tests (143 tests passing):
+Execute the full suite of unit and integration tests (147 tests passing):
 
 ```bash
 python -m pytest tests/ -v
@@ -505,8 +517,8 @@ This project is built to satisfy the core evaluation criteria of the **Nebius x 
 | Hackathon Criterion | Project Implementation & Proof Points |
 | :--- | :--- |
 | **NVIDIA Technology Utilization** | • NVIDIA NIM `nvidia/llama-nemotron-embed-vl-1b-v2` for state-of-the-art embedding retrieval.<br/>• NVIDIA NIM `meta/llama-3.2-11b-vision-instruct` for query enhancement and grounded reasoning.<br/>• Prepared integration for NVIDIA NeMo Reranker (`nvidia/reranking-nemotron-4b`). |
-| **Nebius AI Studio Integration** | • Seamless resilient dual-provider fallback architecture leveraging Nebius Token Factory.<br/>• High-throughput inference for large-scale document synthesis (`nvidia/Llama-3.1-Nemotron-70B-Instruct-HF`). |
-| **Technical Depth & Engineering Rigor** | • Complete separation of concerns (ETL, Vector Indexing, Query Augmentation, Generation).<br/>• Idempotent chunking with SHA-256 deterministic IDs, eliminating ghost chunks.<br/>• 14 automated test suites (143 passing tests) with GitHub Actions CI pipeline and quantitative empirical benchmark suite. |
+| **Nebius Token Factory Integration** | • Every chat completion (answers, query augmentation, reranking) runs on Nebius Token Factory when `NEBIUS_API_KEY` is set.<br/>• Nemotron 3 Super for grounded answers; Nemotron 3 Nano for the fast retrieval-side calls. |
+| **Technical Depth & Engineering Rigor** | • Complete separation of concerns (ETL, Vector Indexing, Query Augmentation, Generation).<br/>• Idempotent chunking with SHA-256 deterministic IDs, eliminating ghost chunks.<br/>• 14 automated test suites (147 passing tests) with GitHub Actions CI pipeline and quantitative empirical benchmark suite. |
 | **Real-World Impact & Feasibility** | • Solves a tangible, daily problem for thousands of university students and faculty.<br/>• Strict zero-hallucination guardrails and auditable page-level citations. |
 
 ---

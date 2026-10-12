@@ -18,6 +18,7 @@ from src.retrieval.reranker import StudyReranker
 from src.retrieval.retriever import StudyRetriever
 from src.retrieval.tavily_search import TavilySearchClient
 from src.generation.generator import StudyGenerator
+from src.generation.tutor_format import allowed_source_keys, infer_grounding
 
 
 class StudyAssistant:
@@ -247,17 +248,24 @@ class StudyAssistant:
 
         # 2. Format Context for Pedagogical Generator
         context = self.retriever.format_context(reranked_chunks)
+        grounding = infer_grounding(reranked_chunks)
 
         # 3. Generate Answer (Streaming vs Non-Streaming)
         if stream:
-            return self.generator.generate_stream(query=query.strip(), context=context)
+            return self.generator.generate_stream(query=query.strip(), context=context, grounding=grounding)
 
-        gen_result = self.generator.generate(query=query.strip(), context=context)
+        gen_result = self.generator.generate(
+            query=query.strip(),
+            context=context,
+            grounding=grounding,
+            allowed_sources=allowed_source_keys(reranked_chunks, context),
+        )
 
         return {
             "answer": gen_result.get("answer", ""),
             "sources": gen_result.get("sources", []),
             "chunks": reranked_chunks,
+            "grounding": grounding,
             "model": gen_result.get("model", ""),
             "provider": gen_result.get("provider", ""),
         }
