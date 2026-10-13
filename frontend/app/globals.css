@@ -1356,6 +1356,32 @@ body {
   color: var(--text-secondary);
 }
 
+.reference-item {
+  padding: 3px 6px;
+  border-radius: 6px;
+  transition: background-color 0.3s ease, box-shadow 0.3s ease;
+  margin-bottom: 3px;
+}
+
+@keyframes refHighlightPulse {
+  0% {
+    background-color: rgba(99, 102, 241, 0.35);
+    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2);
+  }
+  60% {
+    background-color: rgba(99, 102, 241, 0.25);
+    box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
+  }
+  100% {
+    background-color: transparent;
+    box-shadow: none;
+  }
+}
+
+.reference-item.highlight-ref {
+  animation: refHighlightPulse 1.8s ease-out;
+}
+
 .reference-link {
   background: none;
   border: none;
@@ -1455,3 +1481,242 @@ body {
     padding: 12px 0;
   }
 }
+
+/* --- Symbolic CAS Math Verification Card --- */
+.verification-card {
+  margin-top: 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-card);
+  overflow: hidden;
+  font-family: var(--font-sans);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.verification-card.status-verified {
+  border-color: rgba(34, 197, 94, 0.35);
+  background: rgba(34, 197, 94, 0.03);
+}
+
+.verification-card.status-discrepancy {
+  border-color: rgba(239, 68, 68, 0.4);
+  background: rgba(239, 68, 68, 0.04);
+}
+
+.verification-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  cursor: pointer;
+  user-select: none;
+  background: var(--bg-secondary);
+}
+
+.verification-header:hover {
+  background: var(--bg-card-hover, rgba(255, 255, 255, 0.04));
+}
+
+.verification-badge-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.verification-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 999px;
+  letter-spacing: 0.02em;
+}
+
+.badge-verified {
+  background: rgba(34, 197, 94, 0.15);
+  color: #22c55e;
+  border: 1px solid rgba(34, 197, 94, 0.3);
+}
+
+.badge-discrepancy {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.badge-inconclusive {
+  background: rgba(148, 163, 184, 0.15);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-subtle);
+}
+
+.verification-formula-preview {
+  display: inline-flex;
+  align-items: center;
+  font-size: 13px;
+  color: var(--text-primary);
+  max-width: 520px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 2px 8px;
+  background: var(--bg-card, rgba(0, 0, 0, 0.25));
+  border-radius: 6px;
+  border: 1px solid var(--border-subtle);
+  line-height: 1.25;
+}
+
+.verification-formula-preview .katex {
+  font-size: 1.05em;
+}
+
+.verification-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 4px;
+}
+
+.verification-toggle-btn:hover {
+  color: var(--text-primary);
+}
+
+.verification-body {
+  padding: 12px 14px;
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.verification-summary-text {
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+
+.verification-boundary-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.verification-section-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.verification-boundary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 8px;
+}
+
+.boundary-chip {
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-primary);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11.5px;
+}
+
+.boundary-chip.match {
+  border-color: rgba(34, 197, 94, 0.25);
+}
+
+.boundary-chip.diverge {
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.boundary-input {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.boundary-eval {
+  font-family: monospace;
+  color: var(--text-secondary);
+}
+
+.boundary-status {
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+.boundary-chip.match .boundary-status {
+  color: #22c55e;
+}
+
+.boundary-chip.diverge .boundary-status {
+  color: #ef4444;
+}
+
+.verification-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+.verification-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  text-decoration: none;
+  transition: all 0.15s ease;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
+.verification-action-btn:hover {
+  background: var(--bg-primary);
+  border-color: var(--accent-primary, #6366f1);
+  color: var(--accent-primary, #6366f1);
+}
+
+.wolfram-btn {
+  color: #ff6600;
+  border-color: rgba(255, 102, 0, 0.3);
+}
+
+.wolfram-btn:hover {
+  background: rgba(255, 102, 0, 0.08);
+  border-color: #ff6600;
+  color: #ff6600;
+}
+
+.verification-code-box {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-primary);
+  margin: 4px 0 0;
+}
+

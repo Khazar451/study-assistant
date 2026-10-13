@@ -21,6 +21,7 @@ chroma_db/
 
 # Antigravity agent & local config
 .agent/
+.agents/
 .gemini/
 
 # Frontend build & dependencies

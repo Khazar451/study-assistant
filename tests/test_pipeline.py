@@ -144,3 +144,28 @@ def test_ingest_directory_continues_on_corrupt_file(tmp_path, mock_embedder, in_
     assert len(results["failed"]) == 1
     assert results["failed"][0]["source"] == "corrupted_lecture.pdf"
     assert "error" in results["failed"][0]
+
+
+def test_ingest_pptx_file_end_to_end(tmp_path, mock_embedder, in_memory_indexer):
+    """Verify that a PPTX presentation file is chunked, embedded, and indexed properly."""
+    import pptx
+
+    pptx_path = tmp_path / "calculus_slides.pptx"
+    prs = pptx.Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[0])
+    slide.shapes.title.text = "Calculus I: Limits and Continuity"
+    slide.placeholders[1].text = "Definition of epsilon-delta limit proofs."
+    prs.save(str(pptx_path))
+
+    pipeline = IngestionPipeline(
+        embedder=mock_embedder,
+        indexer=in_memory_indexer,
+    )
+
+    result = pipeline.ingest_file(pptx_path)
+
+    assert result["status"] == "success"
+    assert result["source"] == "calculus_slides.pptx"
+    assert result["chunks_count"] > 0
+    assert in_memory_indexer.count() > 0
+

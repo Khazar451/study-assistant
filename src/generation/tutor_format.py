@@ -141,7 +141,64 @@ def bind_numbered_citations(
 
     text = re.sub(r"([^\n])\n+(\d{1,2})[^\S\n]*(?=\n|$)", attach_orphan_cite, text)
     text = re.sub(r"\n+## References\b[\s\S]*$", "", text).strip()
+    text = _clean_math_citations(text)
     return text, references
+
+
+_MATH_CITE_RE = re.compile(
+    r"(?:\\[q]?quad|\\hspace\{[^}]*\}|\s*)*(?:\\text|\\tag)?\s*\{?\s*(\[(?:Source|Web Source):[^\]]+?\]|\[\d{1,2}\])\s*\}?\s*([.,;:!?])?",
+    re.IGNORECASE,
+)
+
+
+def _clean_math_citations(text: str) -> str:
+    """Extract any citation [1], [2] or [Source: ...] out of $$...$$ or $...$ math blocks."""
+    if not text:
+        return ""
+
+    def fix_display_block(match: re.Match) -> str:
+        body = match.group(1)
+        cites: List[str] = []
+        punct = ""
+
+        def repl(m: re.Match) -> str:
+            nonlocal punct
+            cites.append(m.group(1).strip())
+            if m.group(2):
+                punct = m.group(2)
+            return ""
+
+        cleaned_body = _MATH_CITE_RE.sub(repl, body).rstrip()
+        if not cites:
+            return match.group(0)
+        cite_str = " ".join(cites) + punct
+        return f"\n$$\n{cleaned_body}\n$$\n{cite_str}\n"
+
+    # 1. Process display math $$ ... $$
+    text = re.sub(r"\$\$([\s\S]*?)\$\$", fix_display_block, text)
+
+    def fix_inline_block(match: re.Match) -> str:
+        body = match.group(1)
+        cites: List[str] = []
+        punct = ""
+
+        def repl(m: re.Match) -> str:
+            nonlocal punct
+            cites.append(m.group(1).strip())
+            if m.group(2):
+                punct = m.group(2)
+            return ""
+
+        cleaned_body = _MATH_CITE_RE.sub(repl, body).rstrip()
+        if not cites:
+            return match.group(0)
+        cite_str = " ".join(cites) + punct
+        return f"${cleaned_body}$ {cite_str}"
+
+    # 2. Process inline math $ ... $
+    text = re.sub(r"(?<!\$)\$(?!\$)([\s\S]*?)(?<!\$)\$(?!\$)", fix_inline_block, text)
+    return text
+
 
 
 _MATH_DELIM = re.compile(r"\$\$[\s\S]*?\$\$|\$(?!\$)(?:\\.|[^$\n])+\$")
@@ -176,8 +233,23 @@ def _matching_paren(text: str, open_at: int) -> int:
     return -1
 
 
+_COMMON_STOP_WORDS = {
+    "into", "another", "that", "is", "are", "was", "were", "often", "simpler", "to",
+    "evaluate", "and", "or", "for", "with", "from", "then", "gives", "where", "when",
+    "using", "by", "the", "a", "an", "in", "on", "at", "as", "of", "we", "can",
+    "see", "which", "this", "these", "let", "suppose", "assuming", "yields", "results",
+    "such", "starting", "how", "why", "what", "because", "so", "if", "not", "but"
+}
+
+
 def _is_display_formula(formula: str) -> bool:
-    return bool(re.search(r"\\(?:frac|int|iint|sum|lim|prod)(?![A-Za-z])", formula)) or len(formula) > 80
+    if any(k in formula for k in (r"\begin", r"\displaystyle", r"\Big", r"\tag")):
+        return True
+    has_eq = bool(re.search(r"[=<>]|\\approx|\\le|\\ge", formula))
+    has_complex = bool(re.search(r"\\(?:frac|partial|sum|lim|prod|int|iint)", formula))
+    if has_eq and has_complex and len(formula) >= 28:
+        return True
+    return len(formula) > 75
 
 
 def _math_span(formula: str) -> str:
@@ -225,6 +297,13 @@ def _formula_end(text: str, start: int) -> int:
             nxt = text[index + 1] if index + 1 < len(text) else ""
             if not nxt.isdigit():
                 break
+        elif char == " " and brace == 0 and paren == 0:
+            rest = text[index:].lstrip()
+            if rest.startswith(("[", "#")):
+                break
+            word_match = re.match(r"^([a-zA-Z]{2,})\b", rest)
+            if word_match and word_match.group(1).lower() in _COMMON_STOP_WORDS:
+                break
         index += 1
     return index
 
@@ -243,56 +322,91 @@ def _extract_formula_runs(segment: str) -> str:
     return "".join(pieces)
 
 
-def _wrap_bare_math(segment: str) -> str:
-    segment = _TEX_DISPLAY.sub(lambda match: _math_span(match.group(1)), segment)
-    segment = _TEX_INLINE.sub(lambda match: _math_span(match.group(1)), segment)
-    segment = _BRACKET_DISPLAY.sub(lambda match: _math_span(match.group(1)), segment)
-    segment = _extract_formula_runs(segment)
-
+def _process_bare_text(text: str) -> str:
+    text = _extract_formula_runs(text)
     pieces: List[str] = []
     index = 0
-    while index < len(segment):
-        if segment.startswith("$$", index):
-            end = segment.find("$$", index + 2)
-            end = len(segment) if end == -1 else end + 2
-            pieces.append(segment[index:end])
+    while index < len(text):
+        if text.startswith("$$", index):
+            end = text.find("$$", index + 2)
+            end = len(text) if end == -1 else end + 2
+            pieces.append(text[index:end])
             index = end
             continue
-        if segment[index] == "$":
-            end = segment.find("$", index + 1)
-            end = len(segment) if end == -1 else end + 1
-            pieces.append(segment[index:end])
+        if text[index] == "$":
+            end = text.find("$", index + 1)
+            end = len(text) if end == -1 else end + 1
+            pieces.append(text[index:end])
             index = end
             continue
-        if segment[index] == "(":
-            end = _matching_paren(segment, index)
-            body = segment[index + 1:end] if end != -1 else ""
+        if text[index] == "(":
+            end = _matching_paren(text, index)
+            body = text[index + 1:end] if end != -1 else ""
             if end != -1 and "$" not in body and _looks_like_inline_math(body):
                 pieces.append(_math_span(body))
                 index = end + 1
                 continue
-        pieces.append(segment[index])
+        pieces.append(text[index])
         index += 1
+    return "".join(pieces)
+
+
+def _wrap_bare_math(segment: str) -> str:
+    segment = _TEX_DISPLAY.sub(lambda match: _math_span(match.group(1)), segment)
+    segment = _TEX_INLINE.sub(lambda match: _math_span(match.group(1)), segment)
+    segment = _BRACKET_DISPLAY.sub(lambda match: _math_span(match.group(1)), segment)
+
+    pieces: List[str] = []
+    cursor = 0
+    for match in _MATH_DELIM.finditer(segment):
+        if match.start() > cursor:
+            pieces.append(_process_bare_text(segment[cursor:match.start()]))
+        pieces.append(match.group(0))
+        cursor = match.end()
+    if cursor < len(segment):
+        pieces.append(_process_bare_text(segment[cursor:]))
     wrapped = "".join(pieces)
     return re.sub(r"\(\s*(\$\$(?:[\s\S]*?)\$\$|\$[^$]+\$)\s*\)", r"\1", wrapped)
 
 
 def normalize_math(text: str) -> str:
     """Put bare TeX into $$...$$ and fix differentials written with a comma."""
+    if not text:
+        return ""
+
+    # Pre-clean: extract citations out of math and collapse duplicate/empty delimiters
+    text = _clean_math_citations(text)
+    text = re.sub(r"\$\$(?:\s*\$\$)+", "$$", text)
+    text = re.sub(r"\$\$\s*\$\$", "", text)
+    text = re.sub(r"(?<!\$)\$(?!\$)\s*(?<!\$)\$(?!\$)", "", text)
+
     pieces: List[str] = []
     cursor = 0
     for match in _MATH_DELIM.finditer(text):
-        pieces.append(_wrap_bare_math(text[cursor:match.start()]))
-        pieces.append(_repair_latex(match.group(0)) if match.group(0).startswith("$$") or match.group(0).startswith("$") else match.group(0))
-        # Keep delimiters; only repair the formula body.
+        if match.start() > cursor:
+            pieces.append(_wrap_bare_math(text[cursor:match.start()]))
         block = match.group(0)
         if block.startswith("$$"):
-            pieces[-1] = "$$" + _repair_latex(block[2:-2]) + "$$"
+            body = _repair_latex(block[2:-2])
+            pieces.append(f"\n$$\n{body}\n$$\n")
         elif block.startswith("$"):
-            pieces[-1] = "$" + _repair_latex(block[1:-1]) + "$"
+            body = _repair_latex(block[1:-1])
+            pieces.append(f"${body}$")
+        else:
+            pieces.append(block)
         cursor = match.end()
-    pieces.append(_wrap_bare_math(text[cursor:]))
-    return "".join(pieces)
+    if cursor < len(text):
+        pieces.append(_wrap_bare_math(text[cursor:]))
+
+    result = "".join(pieces)
+    result = re.sub(r"\$\$(?:\s*\$\$)+", "$$", result)
+    result = re.sub(r"\$\$\s*\$\$", "", result)
+    result = re.sub(r"\$\$\s*([.,;:!?])\s*\$\$", r"\1", result)
+    result = _clean_math_citations(result)
+    if result.count("$$") % 2 != 0:
+        result += "\n$$"
+    return result
+
 
 
 def polish_tutor_answer(text: str, allowed_sources: Iterable[str] | None = None, grounding: str = "course") -> str:
@@ -311,7 +425,18 @@ def strip_emoji(text: str) -> str:
 
 
 def setext_to_atx(text: str) -> str:
-    """Turn `Title\\n===` / `Title\\n---` into `##` / `###` headings."""
+    """Turn `Title\\n===` / `Title\\n---` into `##` / `###` headings and normalize ATX headings."""
+    # Unescape escaped hashes: '\#\#' -> '##'
+    text = re.sub(r"\\+(#{1,6})", r"\1", text)
+    # Normalize non-breaking spaces
+    text = re.sub(r"[\u00A0\u2000-\u200B]", " ", text)
+    # Collapse duplicate hashes: '## ## Title' -> '## Title'
+    text = re.sub(r"(?m)^(#{1,6})\s*(#{1,6})\s*", r"\1 ", text)
+    # Ensure space after hashes: '##Title' -> '## Title'
+    text = re.sub(r"(?m)^(#{1,6})([^\s#\n])", r"\1 \2", text)
+    # Ensure headings that are glued to the previous line get preceded by a newline
+    text = re.sub(r"([^\n])\s+(#{1,6}\s+[^\n]+)", r"\1\n\n\2", text)
+
     lines = text.splitlines()
     output: List[str] = []
     index = 0

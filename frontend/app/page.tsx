@@ -5,21 +5,100 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
+import katex from "katex";
 import "katex/dist/katex.min.css";
 
+function cleanHeadingText(children: React.ReactNode): React.ReactNode {
+  if (typeof children === "string") {
+    return children.replace(/^#+\s*/, "");
+  }
+  if (Array.isArray(children)) {
+    return children.map((child, idx) => {
+      if (idx === 0 && typeof child === "string") {
+        return child.replace(/^#+\s*/, "");
+      }
+      return child;
+    });
+  }
+  return children;
+}
+
 function prepareTutorMarkdown(text: string): string {
-  const lines = text.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\uFE0F]/gu, "").split("\n");
+  if (!text) return "";
+  let cleaned = text.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\uFE0F]/gu, "");
+
+  // 1. Unescape escaped hashes: '\#\#' -> '##'
+  cleaned = cleaned.replace(/\\+(#{1,6})/g, "$1");
+
+  // 2. Normalize non-breaking spaces or zero-width spaces
+  cleaned = cleaned.replace(/[\u00A0\u2000-\u200B]/g, " ");
+
+  // 3. Collapse duplicate hashes: '## ## Title' -> '## Title'
+  cleaned = cleaned.replace(/(^|\n)(#{1,6})\s+(#{1,6})\s+/g, "$1$2 ");
+
+  // 4. Ensure space after hashes: '##Title' -> '## Title'
+  cleaned = cleaned.replace(/(^|\n)(#{1,6})([^\s#\n])/g, "$1$2 $3");
+
+  // 5. Ensure headings glued to previous sentences get their own line with a blank line before
+  cleaned = cleaned.replace(/([^\n])\s+(#{1,6}\s+[^\n]+)/g, "$1\n\n$2");
+
+  // 6. Pre-clean duplicate/empty display math markers: '$$ \n\n $$' -> '$$'
+  cleaned = cleaned.replace(/\$\$(?:\s*\$\$)+/g, "$$");
+  cleaned = cleaned.replace(/\$\$\s*\$\$/g, "");
+
+  // Convert \[ ... \] to display $$ ... $$ and \( ... \) to inline $ ... $
+  cleaned = cleaned.replace(/\\\[([\s\S]*?)\\\]/g, "\n$$\n$1\n$$\n");
+  cleaned = cleaned.replace(/\\\(([\s\S]*?)\\\)/g, (_, inner) => `$${inner.trim()}$`);
+
+  // 7. Extract citations from math mode ($$ ... $$ and $ ... $)
+  // Matches \quad\text{[3]}, \text{[3]}, \tag{[3]}, [3], etc. with optional trailing punctuation
+  const mathCiteRe = /(?:\\[q]?quad|\\hspace\{[^}]*\}|\s*)*(?:\\text|\\tag)?\s*\{?\s*(\[(?:Source|Web Source):[^\]]+?\]|\[\d{1,2}\])\s*\}?\s*([.,;:!?])?/gi;
+
+  cleaned = cleaned.replace(/\$\$([\s\S]*?)\$\$/g, (match, body) => {
+    const cites: string[] = [];
+    let punct = "";
+    const cleanBody = body.replace(mathCiteRe, (_: string, cite: string, p?: string) => {
+      if (cite) cites.push(cite.trim());
+      if (p) punct = p;
+      return "";
+    }).trim();
+    if (cites.length === 0) return match;
+    const citeStr = cites.join(" ") + punct;
+    return `\n$$\n${cleanBody}\n$$\n${citeStr}\n`;
+  });
+
+  cleaned = cleaned.replace(/(?<!\$)\$(?!\$)([\s\S]*?)(?<!\$)\$(?!\$)/g, (match, body) => {
+    const cites: string[] = [];
+    let punct = "";
+    const cleanBody = body.replace(mathCiteRe, (_: string, cite: string, p?: string) => {
+      if (cite) cites.push(cite.trim());
+      if (p) punct = p;
+      return "";
+    }).trim();
+    if (cites.length === 0) return match;
+    const citeStr = cites.join(" ") + punct;
+    return `$${cleanBody}$ ${citeStr}`;
+  });
+
+  // 8. Balance odd $$ count so unclosed $$ doesn't swallow markdown & citations into KaTeX
+  const displayDollarCount = (cleaned.match(/\$\$/g) || []).length;
+  if (displayDollarCount % 2 !== 0) {
+    cleaned += "\n$$";
+  }
+
+  // 9. Turn setext headings (title \n === / ---) into ATX headings
+  const lines = cleaned.split("\n");
   const output: string[] = [];
   for (let i = 0; i < lines.length; i += 1) {
     const title = lines[i].trim();
     const next = (lines[i + 1] || "").trim();
     if (title && !/^[#\-*|>]/.test(title) && /^=+$/.test(next)) {
-      output.push(`## ${title}`);
+      output.push(`\n## ${title}\n`);
       i += 1;
       continue;
     }
     if (title && !/^[#\-*|>]/.test(title) && next.length >= 3 && /^-+$/.test(next)) {
-      output.push(`### ${title}`);
+      output.push(`\n### ${title}\n`);
       i += 1;
       continue;
     }
@@ -28,9 +107,22 @@ function prepareTutorMarkdown(text: string): string {
   return output.join("\n");
 }
 
+
 function linkCitations(text: string): string {
-  return text.replace(/\[(\d{1,2})\]/g, "[$1](#ref-$1)");
+  if (!text) return "";
+  // Split by $$ ... $$, \[ ... \], \( ... \), and $ ... $ so citations are ONLY linked OUTSIDE of math formulas.
+  // This guarantees #ref anchors never contaminate KaTeX math mode.
+  return text
+    .split(/(\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)|\$(?:\\.|[^$\n])+\$)/g)
+    .map((chunk) => {
+      if (chunk.startsWith("$") || chunk.startsWith("\\(") || chunk.startsWith("\\[")) {
+        return chunk;
+      }
+      return chunk.replace(/\[(\d{1,2})\]/g, "[$1](#ref-$1)");
+    })
+    .join("");
 }
+
 
 // --- Clean SVG Icons (Zero Emojis) ---
 
@@ -171,6 +263,24 @@ function IconFlip() {
 
 // --- Types ---
 
+interface BoundaryCheck {
+  input: string;
+  lhs: string | number;
+  rhs: string | number;
+  match: boolean;
+}
+
+interface VerificationPayload {
+  has_math: boolean;
+  status: "verified" | "discrepancy" | "inconclusive";
+  method?: string;
+  summary: string;
+  verified_formula?: string;
+  boundary_checks?: BoundaryCheck[];
+  wolfram_url?: string;
+  python_code?: string;
+}
+
 interface Message {
   id: string;
   sender: "user" | "tutor";
@@ -182,6 +292,7 @@ interface Message {
   provider?: string;
   grounding?: "course" | "web" | "general" | "notes" | "both" | "";
   references?: ReferenceItem[];
+  verification?: VerificationPayload | null;
   timestamp: string;
 }
 
@@ -228,6 +339,178 @@ interface SystemStatus {
   augment_model?: string;
   rerank_model?: string;
   embedding_model?: string;
+}
+
+function MathFormula({
+  formula,
+  inline = true,
+  className = "",
+}: {
+  formula: string;
+  inline?: boolean;
+  className?: string;
+}) {
+  if (!formula) return null;
+  let clean = formula.trim();
+  if (clean.startsWith("$$") && clean.endsWith("$$")) {
+    clean = clean.slice(2, -2).trim();
+  } else if (clean.startsWith("$") && clean.endsWith("$")) {
+    clean = clean.slice(1, -1).trim();
+  } else if (clean.startsWith("\\[") && clean.endsWith("\\]")) {
+    clean = clean.slice(2, -2).trim();
+  } else if (clean.startsWith("\\(") && clean.endsWith("\\)")) {
+    clean = clean.slice(2, -2).trim();
+  }
+
+  try {
+    const html = katex.renderToString(clean, {
+      displayMode: !inline,
+      throwOnError: false,
+      strict: "ignore",
+    });
+    return <span className={className} dangerouslySetInnerHTML={{ __html: html }} />;
+  } catch {
+    return <span className={className}>{formula}</span>;
+  }
+}
+
+function VerificationCard({ verification }: { verification?: VerificationPayload | null }) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [showCode, setShowCode] = useState(false);
+
+  // Strictly guard: only render the card when symbolic check is verified!
+  // Never show noisy, broken, or unverified "inconclusive" cards.
+  if (!verification || !verification.has_math || verification.status !== "verified") return null;
+
+  const handleCopy = () => {
+    if (verification.python_code) {
+      navigator.clipboard.writeText(verification.python_code);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  return (
+    <div className="verification-card status-verified">
+      <div className="verification-header" onClick={() => setIsOpen(!isOpen)}>
+        <div className="verification-badge-group">
+          <span className="verification-badge badge-verified">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="20 6 9 17 4 12" />
+            </svg>
+            Symbolically Verified (CAS)
+          </span>
+          {verification.verified_formula && (
+            <span className="verification-formula-preview" title="Verified Symbolic Identity">
+              <MathFormula formula={verification.verified_formula} inline={true} />
+            </span>
+          )}
+        </div>
+        <button
+          type="button"
+          className="verification-toggle-btn"
+          aria-expanded={isOpen}
+          onClick={(e) => {
+            e.stopPropagation();
+            setIsOpen(!isOpen);
+          }}
+        >
+          {isOpen ? "Hide Details" : "Inspect Proof"}
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            style={{ transform: isOpen ? "rotate(180deg)" : "none", transition: "transform 0.2s" }}
+          >
+            <polyline points="6 9 12 15 18 9" />
+          </svg>
+        </button>
+      </div>
+
+      {isOpen && (
+        <div className="verification-body">
+          <div className="verification-summary-text">
+            <strong>Method:</strong> {verification.summary}
+          </div>
+
+          {verification.boundary_checks && verification.boundary_checks.length > 0 && (
+            <div className="verification-boundary-section">
+              <span className="verification-section-title">Boundary Input Sanity Checks</span>
+              <div className="verification-boundary-grid">
+                {verification.boundary_checks.map((check, idx) => (
+                  <div key={idx} className={`boundary-chip ${check.match ? "match" : "diverge"}`}>
+                    <span className="boundary-input">{check.input}</span>
+                    <span className="boundary-eval">
+                      <MathFormula formula={`${check.lhs} = ${check.rhs}`} inline={true} />
+                    </span>
+                    <span className="boundary-status">{check.match ? "✓ Match" : "✗ Divergence"}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="verification-actions">
+            {verification.wolfram_url && (
+              <a
+                href={verification.wolfram_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="verification-action-btn wolfram-btn"
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                  <polyline points="15 3 21 3 21 9" />
+                  <line x1="10" y1="14" x2="21" y2="3" />
+                </svg>
+                Verify on Wolfram Alpha
+              </a>
+            )}
+
+            {verification.python_code && (
+              <>
+                <button
+                  type="button"
+                  className="verification-action-btn python-copy-btn"
+                  onClick={handleCopy}
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                  </svg>
+                  {copied ? "Copied Python Script!" : "Copy SymPy Script"}
+                </button>
+
+                <button
+                  type="button"
+                  className="verification-action-btn code-toggle-btn"
+                  onClick={() => setShowCode(!showCode)}
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="16 18 22 12 16 6" />
+                    <polyline points="8 6 2 12 8 18" />
+                  </svg>
+                  {showCode ? "Hide Code" : "View Code"}
+                </button>
+              </>
+            )}
+          </div>
+
+          {showCode && verification.python_code && (
+            <pre className="verification-code-box">
+              <code>{verification.python_code}</code>
+            </pre>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function StudyAssistantApp() {
@@ -297,6 +580,22 @@ export default function StudyAssistantApp() {
     }
     fetchStatus();
     fetchDocuments();
+
+    const interval = setInterval(() => {
+      fetchStatus();
+      fetchDocuments();
+    }, 4000);
+
+    const onFocus = () => {
+      fetchStatus();
+      fetchDocuments();
+    };
+    window.addEventListener("focus", onFocus);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("focus", onFocus);
+    };
   }, []);
 
   // Theme toggle handler
@@ -387,13 +686,16 @@ export default function StudyAssistantApp() {
       let finalProvider: string | undefined;
       let finalGrounding: Message["grounding"] = "";
       let finalReferences: ReferenceItem[] = [];
+      let finalVerification: VerificationPayload | null = null;
 
+      let buffer = "";
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
 
-        const chunkText = decoder.decode(value);
-        const lines = chunkText.split("\n\n");
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n\n");
+        buffer = lines.pop() || "";
 
         for (const line of lines) {
           if (line.startsWith("data: ")) {
@@ -417,6 +719,7 @@ export default function StudyAssistantApp() {
                 }
                 finalGrounding = event.grounding || "";
                 finalReferences = event.references || [];
+                finalVerification = event.verification || null;
               }
             } catch {
               // Ignore partial frames
@@ -439,6 +742,7 @@ export default function StudyAssistantApp() {
                 provider: finalProvider,
                 grounding: finalGrounding,
                 references: finalReferences,
+                verification: finalVerification,
               }
             : msg
         )
@@ -472,6 +776,7 @@ export default function StudyAssistantApp() {
                   model: data.model,
                   provider: data.provider_label,
                   grounding: data.grounding,
+                  verification: data.verification || null,
                 }
               : msg
           )
@@ -684,7 +989,41 @@ export default function StudyAssistantApp() {
     setCardScores((prev) => ({ ...prev, [id]: score }));
   };
 
-  const openReference = (ref: ReferenceItem) => {
+  const isPptReference = (ref?: ReferenceItem | null) => {
+    if (!ref) return false;
+    const target = (ref.file_path || ref.source || "").toLowerCase();
+    return target.endsWith(".pptx") || target.endsWith(".ppt");
+  };
+
+  const scrollToBottomReference = (msgId: string, refNum: number) => {
+    const el = document.getElementById(`ref-${msgId}-${refNum}`);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      el.classList.add("highlight-ref");
+      setTimeout(() => {
+        el.classList.remove("highlight-ref");
+      }, 2000);
+      return true;
+    }
+    return false;
+  };
+
+  const openReference = (ref: ReferenceItem, msgId?: string) => {
+    if (isPptReference(ref)) {
+      if (msgId && scrollToBottomReference(msgId, ref.n)) {
+        return;
+      }
+      if (ref.preview) {
+        setSelectedCitation({
+          source: ref.source,
+          page: ref.page,
+          preview: ref.preview,
+          source_type: ref.source_type,
+        });
+      }
+      return;
+    }
+
     if (ref.url) {
       window.open(ref.url, "_blank", "noopener,noreferrer");
       return;
@@ -793,7 +1132,7 @@ export default function StudyAssistantApp() {
               {activeTab === "flashcards" && "Recall"}
             </h2>
             {activeTab === "materials" && (
-              <span className="header-subtitle">PDF, Markdown and Text Indexer</span>
+              <span className="header-subtitle">PDF, PowerPoint Slides, Markdown and Text Indexer</span>
             )}
             {activeTab === "flashcards" && (
               <span className="header-subtitle">Exam Preparation and Review Cards</span>
@@ -882,14 +1221,28 @@ export default function StudyAssistantApp() {
                             remarkPlugins={[remarkGfm, remarkMath]}
                             rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: "ignore" }]]}
                             components={{
+                              h1: ({ children, ...props }) => <h1 {...props}>{cleanHeadingText(children)}</h1>,
+                              h2: ({ children, ...props }) => <h2 {...props}>{cleanHeadingText(children)}</h2>,
+                              h3: ({ children, ...props }) => <h3 {...props}>{cleanHeadingText(children)}</h3>,
+                              h4: ({ children, ...props }) => <h4 {...props}>{cleanHeadingText(children)}</h4>,
                               a: ({ href, children }) => {
                                 if (href?.startsWith("#ref-")) {
-                                  const ref = msg.references?.find((item) => item.n === Number(href.slice(5)));
+                                  const refNum = Number(href.slice(5));
+                                  const ref = msg.references?.find((item) => item.n === refNum);
                                   return (
                                     <button
                                       type="button"
                                       className="cite-num"
-                                      onClick={() => ref && openReference(ref)}
+                                      onClick={() => {
+                                        if (ref && isPptReference(ref)) {
+                                          scrollToBottomReference(msg.id, ref.n);
+                                        } else if (ref) {
+                                          openReference(ref, msg.id);
+                                        } else {
+                                          scrollToBottomReference(msg.id, refNum);
+                                        }
+                                      }}
+                                      title={ref ? `${ref.source} (p. ${ref.page || 1})` : `Reference [${refNum}]`}
                                     >
                                       [{href.slice(5)}]
                                     </button>
@@ -916,7 +1269,19 @@ export default function StudyAssistantApp() {
                           {msg.references
                             .filter((ref) => ref.image_url)
                             .map((ref) => (
-                              <figure key={`${ref.file_path}-${ref.page}`} className="page-figure">
+                              <figure
+                                key={`${ref.file_path}-${ref.page}`}
+                                className="page-figure"
+                                onClick={() => {
+                                  if (isPptReference(ref)) {
+                                    scrollToBottomReference(msg.id, ref.n);
+                                  } else {
+                                    openReference(ref, msg.id);
+                                  }
+                                }}
+                                style={{ cursor: "pointer" }}
+                                title={isPptReference(ref) ? "Referansa git" : "Görüntülemek için tıklayın"}
+                              >
                                 <img src={ref.image_url} alt={ref.label} />
                                 <figcaption>{ref.label}</figcaption>
                               </figure>
@@ -927,14 +1292,21 @@ export default function StudyAssistantApp() {
                       {msg.references && msg.references.length > 0 && (
                         <ol className="reference-list">
                           {msg.references.map((ref) => (
-                            <li key={ref.n} id={`ref-${msg.id}-${ref.n}`}>
-                              <button type="button" className="reference-link" onClick={() => openReference(ref)}>
+                            <li key={ref.n} id={`ref-${msg.id}-${ref.n}`} className="reference-item">
+                              <button
+                                type="button"
+                                className="reference-link"
+                                onClick={() => openReference(ref, msg.id)}
+                              >
                                 {ref.label}
                               </button>
                             </li>
                           ))}
                         </ol>
                       )}
+
+                      {/* Symbolic CAS Math Verification */}
+                      {msg.verification && <VerificationCard verification={msg.verification} />}
 
                       {/* Latency & Model Footer */}
                       {msg.durationMs !== undefined && msg.model && (
@@ -1116,7 +1488,7 @@ export default function StudyAssistantApp() {
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".pdf,.txt,.md,.png,.jpg,.jpeg"
+                accept=".pdf,.txt,.md,.png,.jpg,.jpeg,.pptx,.ppt"
                 style={{ display: "none" }}
                 onChange={handleFileUpload}
               />
@@ -1127,7 +1499,7 @@ export default function StudyAssistantApp() {
                 {isUploading ? "Processing document chunks..." : "Click or drag course files here"}
               </div>
               <div className="dropzone-sub">
-                Supported: PDF lecture slides, diagrams (.png, .jpg), TXT transcripts, and Markdown notes
+                Supported: PDF & PowerPoint slides (.pptx, .ppt), diagrams (.png, .jpg), TXT transcripts, and Markdown notes
               </div>
             </div>
 
