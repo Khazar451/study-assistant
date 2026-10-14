@@ -201,21 +201,56 @@ def _clean_math_citations(text: str) -> str:
 
 
 
+_UNICODE_MATH_MAP = {
+    "∫": r"\int ",
+    "∬": r"\iint ",
+    "∭": r"\iiint ",
+    "∮": r"\oint ",
+    "∑": r"\sum ",
+    "∏": r"\prod ",
+    "√": r"\sqrt",
+    "∂": r"\partial ",
+    "∞": r"\infty ",
+    "≈": r"\approx ",
+    "≠": r"\ne ",
+    "≤": r"\le ",
+    "≥": r"\ge ",
+    "→": r"\to ",
+    "±": r"\pm ",
+    "·": r"\cdot ",
+    "×": r"\times ",
+    "÷": r"\div ",
+}
+
+
+def _convert_unicode_math(text: str) -> str:
+    """Convert raw Unicode mathematical symbols into standard LaTeX equivalents."""
+    if not text:
+        return ""
+    for uni, lat in _UNICODE_MATH_MAP.items():
+        text = text.replace(uni, lat)
+    return text
+
+
 _MATH_DELIM = re.compile(r"\$\$[\s\S]*?\$\$|\$(?!\$)(?:\\.|[^$\n])+\$")
 _MATH_COMMAND = re.compile(
     r"\\(?:displaystyle|int|iint|oint|frac|sum|prod|lim|sqrt|partial|Big|left|right|to|infty)(?![A-Za-z])"
 )
 _BRACKET_DISPLAY = re.compile(
-    r"\[\s*(\\(?:displaystyle|frac|partial|int|iint|sum|lim|prod)[\s\S]*?)\s*\]"
+    r"(?m)^\s*\[\s*(\\(?:displaystyle|frac|partial|int|iint|sum|lim|prod)[\s\S]*?)\s*\]\s*$"
 )
 _TEX_INLINE = re.compile(r"\\\(([\s\S]*?)\\\)")
 _TEX_DISPLAY = re.compile(r"\\\[([\s\S]*?)\\\]")
 
 
 def _repair_latex(formula: str) -> str:
-    """Turn model shorthand into LaTeX KaTeX can render."""
+    """Turn model shorthand into LaTeX KaTeX can render and repair unclosed sizing tags."""
     formula = formula.replace(r"\displaystyle", " ")
     formula = re.sub(r"(?<!\\),\s*(d[a-zA-Z])", r"\\,\1", formula)
+    # Strip trailing dangling sizing tags with no delimiter (e.g. \bigl with no bracket)
+    formula = re.sub(r"\\(?:left|right|bigl|bigr|Bigl|Bigr|biggl|biggr|Biggl|Biggr)\s*$", "", formula)
+    # Strip lone sizing command where no delimiter follows
+    formula = re.sub(r"\\(?:left|right|bigl|bigr|Bigl|Bigr|biggl|biggr|Biggl|Biggr)(?=\s*($|[^()\[\]{}|.\\/]))", "", formula)
     formula = re.sub(r"\s+", " ", formula).strip(" ,")
     return formula
 
@@ -299,7 +334,7 @@ def _formula_end(text: str, start: int) -> int:
                 break
         elif char == " " and brace == 0 and paren == 0:
             rest = text[index:].lstrip()
-            if rest.startswith(("[", "#")):
+            if rest.startswith("#") or re.match(r"^\[(?:\d{1,2}|Source|Web Source)\b", rest, re.IGNORECASE):
                 break
             word_match = re.match(r"^([a-zA-Z]{2,})\b", rest)
             if word_match and word_match.group(1).lower() in _COMMON_STOP_WORDS:
@@ -369,10 +404,35 @@ def _wrap_bare_math(segment: str) -> str:
     return re.sub(r"\(\s*(\$\$(?:[\s\S]*?)\$\$|\$[^$]+\$)\s*\)", r"\1", wrapped)
 
 
+def _ensure_math_spacing(s: str) -> str:
+    """Ensure a single whitespace exists between inline math ($...$) and adjacent words."""
+    if not s or "$" not in s:
+        return s
+    parts = re.split(r'(\$\$[\s\S]*?\$\$|\$(?!\$)[^\$\n]+?(?<!\$)\$)', s)
+    out: List[str] = []
+    for i, part in enumerate(parts):
+        if part.startswith("$"):
+            if not part.startswith("$$"):
+                # Prepend space if previous text ended with an alphanumeric character
+                if out and out[-1] and re.search(r"[a-zA-Z0-9]$", out[-1]):
+                    out[-1] += " "
+            out.append(part)
+        else:
+            # Append space if previous block was inline math and this text starts with an alphanumeric character
+            if i > 0 and parts[i - 1].startswith("$") and not parts[i - 1].startswith("$$"):
+                if part and re.match(r"^[a-zA-Z0-9]", part):
+                    part = " " + part
+            out.append(part)
+    return "".join(out)
+
+
 def normalize_math(text: str) -> str:
     """Put bare TeX into $$...$$ and fix differentials written with a comma."""
     if not text:
         return ""
+
+    # Convert raw Unicode math symbols (like ∫, ∑, ∂, √, →) into standard LaTeX
+    text = _convert_unicode_math(text)
 
     # Pre-clean: extract citations out of math and collapse duplicate/empty delimiters
     text = _clean_math_citations(text)
@@ -399,13 +459,12 @@ def normalize_math(text: str) -> str:
         pieces.append(_wrap_bare_math(text[cursor:]))
 
     result = "".join(pieces)
-    result = re.sub(r"\$\$(?:\s*\$\$)+", "$$", result)
     result = re.sub(r"\$\$\s*\$\$", "", result)
     result = re.sub(r"\$\$\s*([.,;:!?])\s*\$\$", r"\1", result)
     result = _clean_math_citations(result)
     if result.count("$$") % 2 != 0:
         result += "\n$$"
-    return result
+    return _ensure_math_spacing(result)
 
 
 
@@ -435,7 +494,7 @@ def setext_to_atx(text: str) -> str:
     # Ensure space after hashes: '##Title' -> '## Title'
     text = re.sub(r"(?m)^(#{1,6})([^\s#\n])", r"\1 \2", text)
     # Ensure headings that are glued to the previous line get preceded by a newline
-    text = re.sub(r"([^\n])\s+(#{1,6}\s+[^\n]+)", r"\1\n\n\2", text)
+    text = re.sub(r"([^#\n])\s*(#{1,6}\s+[^\n]+)", r"\1\n\n\2", text)
 
     lines = text.splitlines()
     output: List[str] = []

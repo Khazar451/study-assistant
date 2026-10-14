@@ -154,6 +154,26 @@ def test_api_ask_stream(client, mock_assistant):
     assert "done" in text
 
 
+@pytest.mark.anyio
+async def test_api_ask_stream_disconnect(mock_assistant):
+    from unittest.mock import AsyncMock
+    from src.api.server import _stream_answer
+
+    mock_assistant.generator.generate_stream.return_value = ["token1 ", "token2 ", "token3 "]
+    chunks = [{"text": "Kepler chunk", "metadata": {"source": "kepler.txt", "page": 1}}]
+
+    mock_req = AsyncMock()
+    mock_req.is_disconnected.side_effect = [False, True, True]
+
+    events = []
+    async for event in _stream_answer(mock_assistant, "query", chunks, "course", request=mock_req):
+        events.append(event)
+
+    assert len(events) == 1
+    assert "token1" in events[0]
+    assert not any("done" in e for e in events)
+
+
 def test_api_flashcards(client, mock_assistant):
     res = client.post("/api/flashcards", json={"count": 2})
     assert res.status_code == 200

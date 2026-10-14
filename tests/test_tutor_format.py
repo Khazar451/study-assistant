@@ -169,3 +169,72 @@ def test_bind_numbered_citations_cleans_math_mode_source_tags():
     assert r"\int u\,dy = uy-\int y\,du" in text
 
 
+def test_nested_bracketed_integral_does_not_break_bigl():
+    raw = r"Substitute back:\n\n\int e^x\cos x\,dx = e^x\sin x - \bigl[ \int e^x\sin x\,dx \bigr] [3]"
+    polished = normalize_math(raw)
+    assert r"\bigl[ \int e^x\sin x\,dx \bigr]" in polished
+    assert "[3]" in polished
+    assert "$$" in polished
+    # Ensure \bigl is never left severed on its own line
+    assert r"\bigl" + "\n" not in polished
+
+
+def test_unicode_math_symbols_converted_to_latex():
+    raw = "Start from ∫ u dv = uv - ∫ v du [1]."
+    polished = normalize_math(raw)
+    assert "∫" not in polished
+    assert r"\int" in polished
+    assert "[1]" in polished
+
+
+def test_dangling_sizing_command_stripped():
+    raw = r"$$\int e^x\,dx = e^x - \bigl$$"
+    polished = normalize_math(raw)
+    assert r"\bigl" not in polished
+    assert r"\int e^x\,dx = e^x -" in polished
+
+
+def test_math_spacing_between_inline_math_and_words():
+    raw = "The goal is to replace an integral $\\int u\\,dy$that is difficult with pick$dy$as something and find$y$) and be$u$ [4]."
+    polished = normalize_math(raw)
+    assert r"$\int u\,dy$ that" in polished
+    assert "pick $dy$ as" in polished
+    assert "find $y$)" in polished
+    assert "be $u$ [4]" in polished
+
+    # Punctuation tests
+    punct_raw = "Consider ($x$, $y$) where value is $x$. Next step."
+    punct_polished = normalize_math(punct_raw)
+    assert "($x$, $y$)" in punct_polished
+    assert "value is $x$. Next" in punct_polished
+
+
+def test_consecutive_display_equations_do_not_invert_parity():
+    raw = (
+        "Substitute back:\n"
+        r"\int e^x \cos x dx = e^x \sin x + e^x \cos x - \int e^x \cos x dx" "\n\n"
+        r"\int e^{x}\cos x,dx = \frac{e^{x}}{2}(\sin x+\cos x)+C" "\n\n"
+        "(The textbook notes the same result.)# Reduction formula\n[3]"
+    )
+    polished = normalize_math(raw)
+    # Both formulas are inside math, but English commentary is outside math
+    assert r"\int e^x \cos x dx" in polished
+    assert r"\frac{e^{x}}{2}" in polished
+    assert "(The textbook notes the same result.)" in polished
+    # The commentary must NOT be inside $$
+    parts = polished.split("$$")
+    # In parts: even indices (0, 2, 4...) are outside $$, odd indices (1, 3, 5...) are inside $$
+    outside_math = " ".join([parts[i] for i in range(0, len(parts), 2)])
+    assert "The textbook notes the same result." in outside_math
+    assert "[3]" in outside_math
+
+
+def test_glued_headings_without_whitespace_separated():
+    raw = "(result.)# Heading 1\nSome text.\n(contrast.)## Heading 2"
+    polished = setext_to_atx(raw)
+    assert "(result.)\n\n# Heading 1" in polished
+    assert "(contrast.)\n\n## Heading 2" in polished
+
+
+
+
