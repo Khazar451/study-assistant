@@ -22,6 +22,7 @@ from src.generation.plots import embed_plots, ensure_requested_plot
 from src.ingestion.page_images import attach_page_images, is_library_file, render_pdf_page
 from src.generation.tutor_format import allowed_source_keys, bind_numbered_citations, infer_grounding, polish_tutor_answer
 from src.providers import PROVIDER_LABELS
+from src.verification.symbolic_verifier import verify_math_solution
 
 # Load environment configuration
 load_dotenv(".env.local")
@@ -355,6 +356,7 @@ def _stream_answer(assistant: Any, query: str, chunks: List[Dict[str, Any]], gro
         attach_page_images(references, answer)
     answer = ensure_requested_plot(query, embed_plots(answer))
     sources = [ref["label"] for ref in references]
+    verification = verify_math_solution(answer)
     done_event = {
         "type": "done",
         "answer": answer,
@@ -363,6 +365,7 @@ def _stream_answer(assistant: Any, query: str, chunks: List[Dict[str, Any]], gro
         "grounding": grounding,
         "model": getattr(assistant.generator, "model", ""),
         "provider": _provider_label(assistant.generator),
+        "verification": verification,
     }
     yield f"data: {json.dumps(done_event)}\n\n"
 
@@ -514,7 +517,7 @@ async def ingest_file(
     If background=True, starts a background ingestion job and returns job_id immediately.
     If background=False, processes ingestion synchronously in worker threadpool without blocking asyncio loop.
     """
-    allowed_exts = {".pdf", ".txt", ".md", ".png", ".jpg", ".jpeg"}
+    allowed_exts = {".pdf", ".txt", ".md", ".png", ".jpg", ".jpeg", ".pptx", ".ppt"}
     filename = file.filename or "upload.txt"
     ext = Path(filename).suffix.lower()
 
@@ -649,11 +652,13 @@ def ask_question(req: AskRequest) -> Dict[str, Any]:
     )
 
     duration_ms = round((time.time() - start_time) * 1000, 1)
+    verification = verify_math_solution(res.get("answer", ""))
 
     return {
         **res,
         "provider_label": _provider_label(assistant.generator),
         "duration_ms": duration_ms,
+        "verification": verification,
     }
 
 

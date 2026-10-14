@@ -3,6 +3,8 @@ chromadb>=0.5.0
 # --- Document Parsing & Chunking ---
 pypdf>=4.0.0
 pymupdf>=1.24.0
+python-pptx>=1.0.0
+olefile>=0.47
 pillow>=10.0.0
 matplotlib>=3.8.0
 numpy>=1.26.0
@@ -26,3 +28,6 @@ python-multipart>=0.0.9
 # --- Testing & CI ---
 pytest>=8.0.0
 pytest-mock>=3.14.0
+# --- Symbolic Math & Verification ---
+sympy>=1.13.0
+antlr4-python3-runtime>=4.11,<4.12
