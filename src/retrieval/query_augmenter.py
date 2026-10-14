@@ -199,6 +199,70 @@ class QueryAugmenter:
         except Exception:
             return clean_query
 
+    def condense_conversational_query(
+        self,
+        query: str,
+        history: Optional[List[Dict[str, str]]] = None,
+    ) -> str:
+        """Rewrite a conversational follow-up query into a standalone, search-optimized query.
+
+        If history is empty or query is already standalone, returns query unchanged.
+        Example:
+            History: [Student: "What is Kepler's First Law?", Tutor: "..."]
+            Query: "How does eccentricity affect it?"
+            Rewritten: "How does eccentricity affect Kepler's First Law orbit?"
+        """
+        if not query or not query.strip():
+            return ""
+
+        clean_query = query.strip()
+        if not history:
+            return clean_query
+
+        # Format up to last 3 turns (6 messages)
+        history_snippet: List[str] = []
+        for msg in history[-6:]:
+            role = "Student" if msg.get("role") == "user" else "Tutor"
+            content = (msg.get("content") or "").strip()
+            if content:
+                preview = content[:200].replace("\n", " ")
+                history_snippet.append(f"{role}: {preview}")
+
+        if not history_snippet:
+            return clean_query
+
+        history_text = "\n".join(history_snippet)
+        system_prompt = (
+            "You are an expert AI assistant specialized in conversational search retrieval. "
+            "Given the chat history between a Student and a Tutor, and a follow-up question from the Student, "
+            "rewrite the follow-up question to be completely self-contained and search-optimized. "
+            "Resolve all ambiguous pronouns (e.g. 'it', 'that', 'this', 'step 2', 'the previous theorem') and subject references "
+            "so the rewritten query can be used directly for document search. "
+            "If the question is already self-contained, return it as-is. "
+            "Output ONLY the rewritten search query text, with no preamble, explanations, or quotes."
+        )
+
+        user_content = (
+            f"Chat History:\n{history_text}\n\n"
+            f"Follow-up Question: {clean_query}"
+        )
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content},
+                ],
+                temperature=0.1,
+                max_tokens=150,
+                extra_body=self.extra_body,
+            )
+            rewritten = providers.strip_reasoning(response.choices[0].message.content or "").strip('"\'').strip()
+            return rewritten if rewritten else clean_query
+        except Exception:
+            return clean_query
+
     def augment(
         self,
         query: str,

@@ -169,6 +169,8 @@ class StudyAssistant:
         min_rerank_score: Optional[float] = None,
         use_web: bool = False,
         fallback_to_web: bool = False,
+        session_id: Optional[str] = None,
+        history: Optional[List[Dict[str, str]]] = None,
     ) -> Union[Dict[str, Any], Iterator[str]]:
         """Ask a question and receive a grounded answer with page-level citations.
 
@@ -183,6 +185,8 @@ class StudyAssistant:
             min_rerank_score: Optional minimum score threshold for semantic reranker.
             use_web: Whether to include Tavily web search results.
             fallback_to_web: Whether to query Tavily if local knowledge base is empty or lacks context.
+            session_id: Optional session identifier for conversation persistence.
+            history: Optional list of past conversation turns.
 
         Returns:
             Dictionary with 'answer', 'sources', 'chunks', 'model', and 'provider',
@@ -199,23 +203,48 @@ class StudyAssistant:
                 "chunks": [],
                 "model": getattr(self.generator, "model", ""),
                 "provider": getattr(self.generator, "provider", ""),
+                "session_id": session_id,
             }
+
+        # Resolve conversation history
+        from src.memory.session_store import get_session_store
+        store = get_session_store()
+        if history is None and session_id:
+            history = store.get_recent_history(session_id, turns=4)
+
+        # Condense conversational query if conversation history is present
+        search_query = query.strip()
+        augmenter = getattr(self, "augmenter", None) or getattr(self.retriever, "augmenter", None)
+        if history and augmenter and hasattr(augmenter, "condense_conversational_query"):
+            search_query = augmenter.condense_conversational_query(search_query, history=history)
 
         # Guard: Empty database
         if self.count() == 0:
             if (use_web or fallback_to_web) and self.tavily and self.tavily.is_available:
-                web_chunks = self.tavily.search(query=query.strip(), max_results=top_n)
+                web_chunks = self.tavily.search(query=search_query, max_results=top_n)
                 if web_chunks:
                     context = self.retriever.format_context(web_chunks)
+                    web_gen_kwargs = {"history": history} if history is not None else {}
                     if stream:
-                        return self.generator.generate_stream(query=query.strip(), context=context)
-                    gen_result = self.generator.generate(query=query.strip(), context=context)
+                        return self.generator.generate_stream(
+                            query=query.strip(), context=context, **web_gen_kwargs
+                        )
+                    gen_result = self.generator.generate(
+                        query=query.strip(), context=context, **web_gen_kwargs
+                    )
+                    answer = gen_result.get("answer", "")
+                    if session_id:
+                        store.add_message(session_id, "user", query.strip())
+                        store.add_message(
+                            session_id, "tutor", answer, sources=gen_result.get("sources", []), grounding="web"
+                        )
                     return {
-                        "answer": gen_result.get("answer", ""),
+                        "answer": answer,
                         "sources": gen_result.get("sources", []),
                         "chunks": web_chunks,
                         "model": gen_result.get("model", ""),
                         "provider": gen_result.get("provider", ""),
+                        "session_id": session_id,
                     }
             msg = "Vector database is empty. Please ingest your study notes or course materials first using assistant.ingest()."
             if stream:
@@ -226,11 +255,12 @@ class StudyAssistant:
                 "chunks": [],
                 "model": getattr(self.generator, "model", ""),
                 "provider": getattr(self.generator, "provider", ""),
+                "session_id": session_id,
             }
 
-        # 1. Search and Rerank
+        # 1. Search and Rerank with condensed search query
         reranked_chunks = self.search(
-            query=query,
+            query=search_query,
             top_k=top_k,
             top_n=top_n,
             augment=augment,
@@ -242,32 +272,43 @@ class StudyAssistant:
 
         # Fallback to Tavily if local search returned no relevant chunks and fallback_to_web is enabled
         if not reranked_chunks and fallback_to_web and not use_web and self.tavily and self.tavily.is_available:
-            web_chunks = self.tavily.search(query=query.strip(), max_results=top_n)
+            web_chunks = self.tavily.search(query=search_query, max_results=top_n)
             if web_chunks:
-                reranked_chunks = self.reranker.rerank(query=query.strip(), chunks=web_chunks, top_n=top_n)
+                reranked_chunks = self.reranker.rerank(query=search_query, chunks=web_chunks, top_n=top_n)
 
         # 2. Format Context for Pedagogical Generator
         context = self.retriever.format_context(reranked_chunks)
         grounding = infer_grounding(reranked_chunks)
 
         # 3. Generate Answer (Streaming vs Non-Streaming)
+        gen_kwargs = {"history": history} if history is not None else {}
         if stream:
-            return self.generator.generate_stream(query=query.strip(), context=context, grounding=grounding)
+            return self.generator.generate_stream(
+                query=query.strip(), context=context, grounding=grounding, **gen_kwargs
+            )
 
         gen_result = self.generator.generate(
             query=query.strip(),
             context=context,
             grounding=grounding,
             allowed_sources=allowed_source_keys(reranked_chunks, context),
+            **gen_kwargs,
         )
 
+        answer = gen_result.get("answer", "")
+        sources = gen_result.get("sources", [])
+        if session_id:
+            store.add_message(session_id, "user", query.strip())
+            store.add_message(session_id, "tutor", answer, sources=sources, grounding=grounding)
+
         return {
-            "answer": gen_result.get("answer", ""),
-            "sources": gen_result.get("sources", []),
+            "answer": answer,
+            "sources": sources,
             "chunks": reranked_chunks,
             "grounding": grounding,
             "model": gen_result.get("model", ""),
             "provider": gen_result.get("provider", ""),
+            "session_id": session_id,
         }
 
     def count(self) -> int:
