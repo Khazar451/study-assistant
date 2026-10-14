@@ -92,10 +92,9 @@ function prepareTutorMarkdown(text: string): string {
   cleaned = cleaned.replace(/(^|\n)(#{1,6})([^\s#\n])/g, "$1$2 $3");
 
   // 5. Ensure headings glued to previous sentences get their own line with a blank line before
-  cleaned = cleaned.replace(/([^\n])\s+(#{1,6}\s+[^\n]+)/g, "$1\n\n$2");
+  cleaned = cleaned.replace(/([^#\n])\s*(#{1,6}\s+[^\n]+)/g, "$1\n\n$2");
 
-  // 6. Pre-clean duplicate/empty display math markers: '$$ \n\n $$' -> '$$'
-  cleaned = cleaned.replace(/\$\$(?:\s*\$\$)+/g, "$$");
+  // 6. Pre-clean empty display math markers
   cleaned = cleaned.replace(/\$\$\s*\$\$/g, "");
 
   // Convert \[ ... \] to display $$ ... $$ and \( ... \) to inline $ ... $

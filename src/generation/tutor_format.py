@@ -459,7 +459,6 @@ def normalize_math(text: str) -> str:
         pieces.append(_wrap_bare_math(text[cursor:]))
 
     result = "".join(pieces)
-    result = re.sub(r"\$\$(?:\s*\$\$)+", "$$", result)
     result = re.sub(r"\$\$\s*\$\$", "", result)
     result = re.sub(r"\$\$\s*([.,;:!?])\s*\$\$", r"\1", result)
     result = _clean_math_citations(result)
@@ -495,7 +494,7 @@ def setext_to_atx(text: str) -> str:
     # Ensure space after hashes: '##Title' -> '## Title'
     text = re.sub(r"(?m)^(#{1,6})([^\s#\n])", r"\1 \2", text)
     # Ensure headings that are glued to the previous line get preceded by a newline
-    text = re.sub(r"([^\n])\s+(#{1,6}\s+[^\n]+)", r"\1\n\n\2", text)
+    text = re.sub(r"([^#\n])\s*(#{1,6}\s+[^\n]+)", r"\1\n\n\2", text)
 
     lines = text.splitlines()
     output: List[str] = []

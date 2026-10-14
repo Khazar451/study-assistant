@@ -1490,10 +1490,6 @@ body {
   padding: 0.2em 0;
 }
 
-.markdown-body .katex {
-  padding: 0 0.12em;
-}
-
 .answer-footnote,
 .thinking-line {
   margin-top: 8px;
