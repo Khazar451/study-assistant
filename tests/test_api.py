@@ -206,6 +206,7 @@ def test_api_ask_with_web_flag(client, mock_assistant):
         min_rerank_score=None,
         use_web=True,
         fallback_to_web=True,
+        session_id=None,
     )
 
 
@@ -237,4 +238,43 @@ def test_api_ingest_file_background(client, mock_assistant):
 def test_api_ingest_status_not_found(client, mock_assistant):
     res = client.get("/api/ingest/status/non-existent-job-id")
     assert res.status_code == 404
+
+
+def test_api_chat_sessions_crud(client, mock_assistant):
+    # 1. Create session
+    create_res = client.post("/api/chat/sessions", json={"title": "Calculus Notes"})
+    assert create_res.status_code == 200
+    sess = create_res.json()
+    assert sess["title"] == "Calculus Notes"
+    assert "id" in sess
+    sid = sess["id"]
+
+    # 2. List sessions
+    list_res = client.get("/api/chat/sessions")
+    assert list_res.status_code == 200
+    sessions = list_res.json()
+    assert any(s["id"] == sid for s in sessions)
+
+    # 3. Get session details
+    get_res = client.get(f"/api/chat/sessions/{sid}")
+    assert get_res.status_code == 200
+    sess_details = get_res.json()
+    assert sess_details["id"] == sid
+    assert sess_details["title"] == "Calculus Notes"
+    assert "messages" in sess_details
+
+    # 4. Rename session
+    patch_res = client.patch(f"/api/chat/sessions/{sid}", json={"title": "Calculus Exam Prep"})
+    assert patch_res.status_code == 200
+    assert patch_res.json()["title"] == "Calculus Exam Prep"
+
+    # 5. Delete session
+    del_res = client.delete(f"/api/chat/sessions/{sid}")
+    assert del_res.status_code == 200
+    assert del_res.json()["success"] is True
+
+    # 6. Verify 404 after deletion
+    get_404 = client.get(f"/api/chat/sessions/{sid}")
+    assert get_404.status_code == 404
+
 

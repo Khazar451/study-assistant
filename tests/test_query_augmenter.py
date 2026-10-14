@@ -170,3 +170,37 @@ def test_augment_modes():
     # Unsupported mode
     with pytest.raises(ValueError, match="Unsupported augmentation mode"):
         augmenter.augment("test", mode="unknown_mode")
+
+
+def test_condense_conversational_query_no_history_returns_original():
+    augmenter = QueryAugmenter(api_key="test-api-key")
+    res = augmenter.condense_conversational_query("How does it work?", history=[])
+    assert res == "How does it work?"
+
+
+def test_condense_conversational_query_with_history_resolves_context():
+    augmenter = QueryAugmenter(api_key="test-api-key")
+    mock_client = MagicMock()
+    mock_choice = SimpleNamespace(message=SimpleNamespace(content="How does Kepler's First Law orbit work?"))
+    mock_client.chat.completions.create.return_value = SimpleNamespace(choices=[mock_choice])
+    augmenter.client = mock_client
+
+    history = [
+        {"role": "user", "content": "What is Kepler's First Law?"},
+        {"role": "assistant", "content": "Kepler's First Law states that planets orbit the sun in ellipses with the sun at one focus."},
+    ]
+    res = augmenter.condense_conversational_query("How does it work?", history=history)
+    assert res == "How does Kepler's First Law orbit work?"
+    mock_client.chat.completions.create.assert_called_once()
+
+
+def test_condense_conversational_query_fallback_on_error():
+    augmenter = QueryAugmenter(api_key="test-api-key")
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.side_effect = RuntimeError("API unavailable")
+    augmenter.client = mock_client
+
+    history = [{"role": "user", "content": "Calculus question"}]
+    res = augmenter.condense_conversational_query("Explain step 2", history=history)
+    assert res == "Explain step 2"
+

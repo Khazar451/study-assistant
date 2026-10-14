@@ -316,7 +316,48 @@ function IconFlip() {
   );
 }
 
+function IconPlus() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M5 12h14" />
+      <path d="M12 5v14" />
+    </svg>
+  );
+}
+
+function IconMessageSquare() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+    </svg>
+  );
+}
+
 // --- Types ---
+
+interface ChatSession {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  message_count?: number;
+}
+
+function formatRelativeTime(dateStr: string): string {
+  if (!dateStr) return "";
+  try {
+    const d = new Date(dateStr);
+    const now = new Date();
+    const diffSec = Math.floor((now.getTime() - d.getTime()) / 1000);
+    if (diffSec < 60) return "Just now";
+    if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
+    if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`;
+    if (diffSec < 604800) return `${Math.floor(diffSec / 86400)}d ago`;
+    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  } catch {
+    return "";
+  }
+}
 
 interface BoundaryCheck {
   input: string;
@@ -590,6 +631,8 @@ export default function StudyAssistantApp() {
   });
 
   // Chat state
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([
     {
       id: "welcome",
@@ -626,6 +669,14 @@ export default function StudyAssistantApp() {
   const chatEndRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
+  const defaultWelcomeMessage: Message = {
+    id: "welcome",
+    sender: "tutor",
+    text: "Ask a question about your notes, or turn on Tavily Web for academic pages. Upload a lecture PDF in Course Materials when you want page citations from your own syllabus.",
+    sources: [],
+    timestamp: "Just now",
+  };
+
   // Stop / interrupt generation mid-stream
   const handleStop = () => {
     if (abortControllerRef.current) {
@@ -633,6 +684,75 @@ export default function StudyAssistantApp() {
       abortControllerRef.current = null;
     }
     setIsGenerating(false);
+  };
+
+  const fetchSessions = async (): Promise<ChatSession[]> => {
+    try {
+      const res = await fetch("/api/chat/sessions");
+      if (res.ok) {
+        const data = await res.json();
+        const list: ChatSession[] = Array.isArray(data) ? data : (data.sessions || []);
+        setSessions(list);
+        return list;
+      }
+    } catch {
+      // Backend starting or offline
+    }
+    return [];
+  };
+
+  const handleSelectSession = async (sessionId: string) => {
+    if (isGenerating) {
+      handleStop();
+    }
+    setActiveSessionId(sessionId);
+    localStorage.setItem("study-assistant-active-session", sessionId);
+    try {
+      const res = await fetch(`/api/chat/sessions/${sessionId}`);
+      if (!res.ok) throw new Error("Failed to load session");
+      const data = await res.json();
+      if (Array.isArray(data.messages) && data.messages.length > 0) {
+        const loaded: Message[] = data.messages.map((m: any) => ({
+          id: m.id || `msg-${Math.random()}`,
+          sender: (m.role === "assistant" || m.role === "tutor") ? "tutor" : "user",
+          text: m.content || "",
+          sources: m.sources || [],
+          references: m.references || [],
+          grounding: m.grounding || "",
+          verification: m.verification || null,
+          timestamp: m.created_at ? formatRelativeTime(m.created_at) : "Earlier",
+        }));
+        setMessages(loaded);
+      } else {
+        setMessages([defaultWelcomeMessage]);
+      }
+    } catch (e) {
+      console.error("Error loading chat session:", e);
+    }
+  };
+
+  const handleNewChat = () => {
+    if (isGenerating) {
+      handleStop();
+    }
+    setActiveSessionId(null);
+    localStorage.removeItem("study-assistant-active-session");
+    setMessages([defaultWelcomeMessage]);
+    setInputQuery("");
+  };
+
+  const handleDeleteSession = async (sessionId: string) => {
+    try {
+      await fetch(`/api/chat/sessions/${sessionId}`, { method: "DELETE" });
+      setSessions((prev) => prev.filter((s) => s.id !== sessionId));
+      if (activeSessionId === sessionId) {
+        setActiveSessionId(null);
+        localStorage.removeItem("study-assistant-active-session");
+        setMessages([defaultWelcomeMessage]);
+      }
+    } catch (e) {
+      console.error("Error deleting session:", e);
+    }
   };
 
   // Keyboard shortcut: Escape cancels generation anywhere in the window
@@ -658,6 +778,12 @@ export default function StudyAssistantApp() {
     }
     fetchStatus();
     fetchDocuments();
+    fetchSessions().then((fetchedList) => {
+      const savedId = localStorage.getItem("study-assistant-active-session");
+      if (savedId && fetchedList && fetchedList.some((s) => s.id === savedId)) {
+        handleSelectSession(savedId);
+      }
+    });
 
     const interval = setInterval(() => {
       fetchStatus();
@@ -667,6 +793,7 @@ export default function StudyAssistantApp() {
     const onFocus = () => {
       fetchStatus();
       fetchDocuments();
+      fetchSessions();
     };
     window.addEventListener("focus", onFocus);
 
@@ -758,8 +885,29 @@ export default function StudyAssistantApp() {
     let finalReferences: ReferenceItem[] = [];
     let finalVerification: VerificationPayload | null = null;
 
+    let currentSessionId = activeSessionId;
+    if (!currentSessionId) {
+      try {
+        const createRes = await fetch("/api/chat/sessions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: q.slice(0, 48) }),
+        });
+        if (createRes.ok) {
+          const newSess = await createRes.json();
+          currentSessionId = newSess.id;
+          setActiveSessionId(newSess.id);
+          localStorage.setItem("study-assistant-active-session", newSess.id);
+          setSessions((prev) => [newSess, ...prev.filter((s) => s.id !== newSess.id)]);
+        }
+      } catch (e) {
+        console.error("Failed to create session on ask:", e);
+      }
+    }
+
     try {
-      const url = `/api/ask/stream?query=${encodeURIComponent(q)}&top_k=${topK}&top_n=${topN}&augment_mode=${augmentMode}&source_mode=${mode}&use_web=false&fallback_to_web=false`;
+      const sessParam = currentSessionId ? `&session_id=${encodeURIComponent(currentSessionId)}` : "";
+      const url = `/api/ask/stream?query=${encodeURIComponent(q)}&top_k=${topK}&top_n=${topN}&augment_mode=${augmentMode}&source_mode=${mode}&use_web=false&fallback_to_web=false${sessParam}`;
       const response = await fetch(url, { signal: controller.signal });
 
       if (!response.ok || !response.body) {
@@ -867,6 +1015,7 @@ export default function StudyAssistantApp() {
             source_mode: mode,
             use_web: false,
             fallback_to_web: false,
+            session_id: currentSessionId,
           }),
         });
         const data = await res.json();
@@ -903,6 +1052,7 @@ export default function StudyAssistantApp() {
       abortControllerRef.current = null;
       setIsGenerating(false);
       fetchStatus();
+      fetchSessions();
     }
   };
 
@@ -1158,6 +1308,8 @@ export default function StudyAssistantApp() {
     { id: "hyde", label: "Match a passage" },
   ];
 
+  const activeSession = sessions.find((s) => s.id === activeSessionId);
+
   return (
     <div className="app-shell">
       {/* Sidebar Navigation */}
@@ -1207,21 +1359,71 @@ export default function StudyAssistantApp() {
           </button>
         </nav>
 
-        <div className="source-panel">
-          <span className="sidebar-kicker">In this session</span>
-          {documents.length === 0 ? (
-            <button className="source-empty" onClick={() => setActiveTab("materials")}>
-              Add a PDF, or load the Kepler sample.
+        {activeTab === "chat" ? (
+          <div className="chat-sessions-section">
+            <button
+              className="new-chat-btn"
+              onClick={handleNewChat}
+              id="new-chat-btn"
+              title="Start a new chat session"
+            >
+              <IconPlus />
+              <span>New Chat</span>
             </button>
-          ) : (
-            documents.slice(0, 8).map((doc) => (
-              <button key={doc.source} className="source-row" onClick={() => setActiveTab("materials")}>
-                <IconFile />
-                <span>{doc.source}</span>
+
+            <div className="sessions-list-header">
+              <span className="sidebar-kicker">Conversations</span>
+            </div>
+
+            <div className="sessions-list">
+              {sessions.length === 0 ? (
+                <div className="sessions-empty">
+                  <span>No saved chats</span>
+                </div>
+              ) : (
+                sessions.map((s) => (
+                  <div
+                    key={s.id}
+                    className={`session-row ${s.id === activeSessionId ? "active" : ""}`}
+                    onClick={() => handleSelectSession(s.id)}
+                    title={s.title}
+                  >
+                    <span className="session-row-icon">
+                      <IconMessageSquare />
+                    </span>
+                    <span className="session-row-title">{s.title || "Untitled Chat"}</span>
+                    <button
+                      className="session-row-delete"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteSession(s.id);
+                      }}
+                      title="Delete conversation"
+                    >
+                      <IconTrash />
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="source-panel">
+            <span className="sidebar-kicker">In this session</span>
+            {documents.length === 0 ? (
+              <button className="source-empty" onClick={() => setActiveTab("materials")}>
+                Add a PDF, or load the Kepler sample.
               </button>
-            ))
-          )}
-        </div>
+            ) : (
+              documents.slice(0, 8).map((doc) => (
+                <button key={doc.source} className="source-row" onClick={() => setActiveTab("materials")}>
+                  <IconFile />
+                  <span>{doc.source}</span>
+                </button>
+              ))
+            )}
+          </div>
+        )}
 
         <div className="sidebar-footer">
           <span>{documents.length === 0 ? "Page citations need notes" : `${documents.length} notes indexed`}</span>
@@ -1238,6 +1440,11 @@ export default function StudyAssistantApp() {
               {activeTab === "materials" && "Notes"}
               {activeTab === "flashcards" && "Recall"}
             </h2>
+            {activeTab === "chat" && activeSession && (
+              <span className="header-subtitle header-session-subtitle" title={activeSession.title}>
+                {activeSession.title}
+              </span>
+            )}
             {activeTab === "materials" && (
               <span className="header-subtitle">PDF, PowerPoint Slides, Markdown and Text Indexer</span>
             )}
@@ -1247,6 +1454,17 @@ export default function StudyAssistantApp() {
           </div>
 
           <div className="header-actions">
+            {activeTab === "chat" && (
+              <button
+                className="new-chat-header-btn"
+                onClick={handleNewChat}
+                title="Start a new chat session"
+                id="new-chat-header-btn"
+              >
+                <IconPlus />
+                <span>New Chat</span>
+              </button>
+            )}
             {/* Dark / Light Mode Switcher */}
             <button
               className="theme-toggle-btn"

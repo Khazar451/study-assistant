@@ -201,6 +201,17 @@ class AskRequest(BaseModel):
     min_rerank_score: Optional[float] = Field(None, description="Optional minimum reranker threshold")
     use_web: bool = Field(False, description="Enable Tavily web search integration")
     fallback_to_web: bool = Field(True, description="Fallback to web search if local context is insufficient")
+    session_id: Optional[str] = Field(None, description="Optional chat session ID for multi-turn conversational memory")
+    source_mode: Optional[str] = Field(None, description="Optional source mode: notes, web, or both")
+
+
+class CreateSessionRequest(BaseModel):
+    title: Optional[str] = Field("New Chat", description="Title of the conversation session")
+    session_id: Optional[str] = Field(None, description="Optional custom session ID")
+
+
+class RenameSessionRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=120, description="New title for the session")
 
 
 class SearchRequest(BaseModel):
@@ -342,10 +353,14 @@ async def _stream_answer(
     chunks: List[Dict[str, Any]],
     grounding: str,
     request: Optional[Request] = None,
+    session_id: Optional[str] = None,
+    history: Optional[List[Dict[str, str]]] = None,
 ):
-    """Stream tokens, then replace the answer with a citation-checked final draft."""
+    """Stream tokens, then replace the answer with a citation-checked final draft and persist to session."""
     context = assistant.retriever.format_context(chunks) if chunks else ""
-    stream = assistant.generator.generate_stream(query=query.strip(), context=context, grounding=grounding)
+    stream = assistant.generator.generate_stream(
+        query=query.strip(), context=context, grounding=grounding, history=history
+    )
     full_text: List[str] = []
     for token in stream:
         if request is not None and await request.is_disconnected():
@@ -368,6 +383,22 @@ async def _stream_answer(
     answer = ensure_requested_plot(query, embed_plots(answer))
     sources = [ref["label"] for ref in references]
     verification = verify_math_solution(answer)
+
+    # Persist conversation turn to SQLite session store
+    if session_id:
+        from src.memory.session_store import get_session_store
+        store = get_session_store()
+        store.add_message(session_id, "user", query.strip())
+        store.add_message(
+            session_id,
+            "tutor",
+            answer,
+            sources=sources,
+            references=references,
+            grounding=grounding,
+            verification=verification,
+        )
+
     done_event = {
         "type": "done",
         "answer": answer,
@@ -377,6 +408,7 @@ async def _stream_answer(
         "model": getattr(assistant.generator, "model", ""),
         "provider": _provider_label(assistant.generator),
         "verification": verification,
+        "session_id": session_id,
     }
     yield f"data: {json.dumps(done_event)}\n\n"
 
@@ -660,6 +692,7 @@ def ask_question(req: AskRequest) -> Dict[str, Any]:
         min_rerank_score=req.min_rerank_score,
         use_web=req.use_web,
         fallback_to_web=req.fallback_to_web,
+        session_id=req.session_id,
     )
 
     duration_ms = round((time.time() - start_time) * 1000, 1)
@@ -703,6 +736,7 @@ async def ask_stream(
     use_web: bool = Query(False),
     fallback_to_web: bool = Query(True),
     source_mode: str = Query("", description="notes, web, or both. Overrides use_web when set."),
+    session_id: Optional[str] = Query(None, description="Optional chat session ID for multi-turn conversational memory"),
 ):
     """Server-Sent Events (SSE) token-by-token streaming endpoint for real-time typewriter UI."""
     assistant = get_assistant()
@@ -718,10 +752,21 @@ async def ask_stream(
             if await request.is_disconnected():
                 return
 
+            # Fetch conversation history if session_id is provided
+            from src.memory.session_store import get_session_store
+            store = get_session_store()
+            history = store.get_recent_history(session_id, turns=4) if session_id else []
+
+            # Condense search query if history exists
+            search_query = query.strip()
+            augmenter = getattr(assistant, "augmenter", None) or getattr(assistant.retriever, "augmenter", None)
+            if history and augmenter and hasattr(augmenter, "condense_conversational_query"):
+                search_query = augmenter.condense_conversational_query(search_query, history=history)
+
             mode = _source_mode(source_mode, use_web, fallback_to_web)
             chunks = _retrieve_for_mode(
                 assistant,
-                query=query,
+                query=search_query,
                 mode=mode,
                 top_k=top_k,
                 top_n=top_n,
@@ -731,7 +776,10 @@ async def ask_stream(
             if not chunks:
                 notice = _empty_retrieval_notice(mode)
                 yield f"data: {json.dumps({'type': 'token', 'token': notice})}\n\n"
-                yield f"data: {json.dumps({'type': 'done', 'answer': notice, 'sources': [], 'references': [], 'grounding': mode if mode != 'both' else 'course'})}\n\n"
+                if session_id:
+                    store.add_message(session_id, "user", query.strip())
+                    store.add_message(session_id, "tutor", notice, grounding=mode if mode != "both" else "course")
+                yield f"data: {json.dumps({'type': 'done', 'answer': notice, 'sources': [], 'references': [], 'grounding': mode if mode != 'both' else 'course', 'session_id': session_id})}\n\n"
                 return
 
             if await request.is_disconnected():
@@ -749,7 +797,15 @@ async def ask_stream(
                 for c in chunks
             ]
             yield f"data: {json.dumps({'type': 'chunks', 'chunks': chunk_previews})}\n\n"
-            async for event in _stream_answer(assistant, query, chunks, infer_grounding(chunks), request=request):
+            async for event in _stream_answer(
+                assistant,
+                query,
+                chunks,
+                infer_grounding(chunks),
+                request=request,
+                session_id=session_id,
+                history=history,
+            ):
                 yield event
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
@@ -885,6 +941,62 @@ def clear_database() -> Dict[str, Any]:
     assistant = get_assistant()
     assistant.clear()
     return {"success": True, "count": assistant.count()}
+
+
+# --- Chat Memory & Session Routes ---
+
+
+@app.get("/api/chat/sessions")
+def list_chat_sessions() -> List[Dict[str, Any]]:
+    """List all saved chat sessions ordered by last updated."""
+    from src.memory.session_store import get_session_store
+    return get_session_store().list_sessions()
+
+
+@app.post("/api/chat/sessions")
+def create_chat_session(req: Optional[CreateSessionRequest] = None) -> Dict[str, Any]:
+    """Create a new chat session."""
+    from src.memory.session_store import get_session_store
+    title = req.title if req and req.title else "New Chat"
+    session_id = req.session_id if req else None
+    return get_session_store().create_session(session_id=session_id, title=title)
+
+
+@app.get("/api/chat/sessions/{session_id}")
+def get_chat_session(session_id: str) -> Dict[str, Any]:
+    """Fetch a chat session and its full message history."""
+    from src.memory.session_store import get_session_store
+    store = get_session_store()
+    session = store.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    messages = store.get_session_messages(session_id)
+    return {
+        **session,
+        "messages": messages,
+    }
+
+
+@app.patch("/api/chat/sessions/{session_id}")
+def rename_chat_session(session_id: str, req: RenameSessionRequest) -> Dict[str, Any]:
+    """Rename a chat session title."""
+    from src.memory.session_store import get_session_store
+    store = get_session_store()
+    success = store.rename_session(session_id, req.title)
+    if not success:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {"success": True, "id": session_id, "title": req.title}
+
+
+@app.delete("/api/chat/sessions/{session_id}")
+def delete_chat_session(session_id: str) -> Dict[str, Any]:
+    """Delete a chat session and all its messages."""
+    from src.memory.session_store import get_session_store
+    store = get_session_store()
+    success = store.delete_session(session_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {"success": True, "id": session_id}
 
 
 if __name__ == "__main__":
