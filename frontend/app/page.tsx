@@ -23,6 +23,33 @@ function cleanHeadingText(children: React.ReactNode): React.ReactNode {
   return children;
 }
 
+function ensureMathSpacing(s: string): string {
+  if (!s || !s.includes("$")) return s;
+  const parts = s.split(/(\$\$[\s\S]*?\$\$|\$(?!\$)[^\$\n]+?(?<!\$)\$)/g);
+  const out: string[] = [];
+  for (let i = 0; i < parts.length; i++) {
+    let part = parts[i];
+    if (part.startsWith("$")) {
+      if (!part.startsWith("$$")) {
+        // Prepend space if previous text ended with an alphanumeric character
+        if (out.length > 0 && out[out.length - 1] && /[a-zA-Z0-9]$/.test(out[out.length - 1])) {
+          out[out.length - 1] += " ";
+        }
+      }
+      out.push(part);
+    } else {
+      // Append space if previous block was inline math and this text starts with an alphanumeric character
+      if (i > 0 && parts[i - 1].startsWith("$") && !parts[i - 1].startsWith("$$")) {
+        if (part && /^[a-zA-Z0-9]/.test(part)) {
+          part = " " + part;
+        }
+      }
+      out.push(part);
+    }
+  }
+  return out.join("");
+}
+
 function prepareTutorMarkdown(text: string): string {
   if (!text) return "";
   let cleaned = text.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\uFE0F]/gu, "");
@@ -133,7 +160,7 @@ function prepareTutorMarkdown(text: string): string {
     }
     output.push(lines[i]);
   }
-  return output.join("\n");
+  return ensureMathSpacing(output.join("\n"));
 }
 
 

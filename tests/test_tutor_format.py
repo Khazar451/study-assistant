@@ -194,3 +194,19 @@ def test_dangling_sizing_command_stripped():
     assert r"\int e^x\,dx = e^x -" in polished
 
 
+def test_math_spacing_between_inline_math_and_words():
+    raw = "The goal is to replace an integral $\\int u\\,dy$that is difficult with pick$dy$as something and find$y$) and be$u$ [4]."
+    polished = normalize_math(raw)
+    assert r"$\int u\,dy$ that" in polished
+    assert "pick $dy$ as" in polished
+    assert "find $y$)" in polished
+    assert "be $u$ [4]" in polished
+
+    # Punctuation tests
+    punct_raw = "Consider ($x$, $y$) where value is $x$. Next step."
+    punct_polished = normalize_math(punct_raw)
+    assert "($x$, $y$)" in punct_polished
+    assert "value is $x$. Next" in punct_polished
+
+
+

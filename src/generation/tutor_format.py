@@ -404,6 +404,28 @@ def _wrap_bare_math(segment: str) -> str:
     return re.sub(r"\(\s*(\$\$(?:[\s\S]*?)\$\$|\$[^$]+\$)\s*\)", r"\1", wrapped)
 
 
+def _ensure_math_spacing(s: str) -> str:
+    """Ensure a single whitespace exists between inline math ($...$) and adjacent words."""
+    if not s or "$" not in s:
+        return s
+    parts = re.split(r'(\$\$[\s\S]*?\$\$|\$(?!\$)[^\$\n]+?(?<!\$)\$)', s)
+    out: List[str] = []
+    for i, part in enumerate(parts):
+        if part.startswith("$"):
+            if not part.startswith("$$"):
+                # Prepend space if previous text ended with an alphanumeric character
+                if out and out[-1] and re.search(r"[a-zA-Z0-9]$", out[-1]):
+                    out[-1] += " "
+            out.append(part)
+        else:
+            # Append space if previous block was inline math and this text starts with an alphanumeric character
+            if i > 0 and parts[i - 1].startswith("$") and not parts[i - 1].startswith("$$"):
+                if part and re.match(r"^[a-zA-Z0-9]", part):
+                    part = " " + part
+            out.append(part)
+    return "".join(out)
+
+
 def normalize_math(text: str) -> str:
     """Put bare TeX into $$...$$ and fix differentials written with a comma."""
     if not text:
@@ -443,7 +465,7 @@ def normalize_math(text: str) -> str:
     result = _clean_math_citations(result)
     if result.count("$$") % 2 != 0:
         result += "\n$$"
-    return result
+    return _ensure_math_spacing(result)
 
 
 
