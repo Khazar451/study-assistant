@@ -201,21 +201,56 @@ def _clean_math_citations(text: str) -> str:
 
 
 
+_UNICODE_MATH_MAP = {
+    "∫": r"\int ",
+    "∬": r"\iint ",
+    "∭": r"\iiint ",
+    "∮": r"\oint ",
+    "∑": r"\sum ",
+    "∏": r"\prod ",
+    "√": r"\sqrt",
+    "∂": r"\partial ",
+    "∞": r"\infty ",
+    "≈": r"\approx ",
+    "≠": r"\ne ",
+    "≤": r"\le ",
+    "≥": r"\ge ",
+    "→": r"\to ",
+    "±": r"\pm ",
+    "·": r"\cdot ",
+    "×": r"\times ",
+    "÷": r"\div ",
+}
+
+
+def _convert_unicode_math(text: str) -> str:
+    """Convert raw Unicode mathematical symbols into standard LaTeX equivalents."""
+    if not text:
+        return ""
+    for uni, lat in _UNICODE_MATH_MAP.items():
+        text = text.replace(uni, lat)
+    return text
+
+
 _MATH_DELIM = re.compile(r"\$\$[\s\S]*?\$\$|\$(?!\$)(?:\\.|[^$\n])+\$")
 _MATH_COMMAND = re.compile(
     r"\\(?:displaystyle|int|iint|oint|frac|sum|prod|lim|sqrt|partial|Big|left|right|to|infty)(?![A-Za-z])"
 )
 _BRACKET_DISPLAY = re.compile(
-    r"\[\s*(\\(?:displaystyle|frac|partial|int|iint|sum|lim|prod)[\s\S]*?)\s*\]"
+    r"(?m)^\s*\[\s*(\\(?:displaystyle|frac|partial|int|iint|sum|lim|prod)[\s\S]*?)\s*\]\s*$"
 )
 _TEX_INLINE = re.compile(r"\\\(([\s\S]*?)\\\)")
 _TEX_DISPLAY = re.compile(r"\\\[([\s\S]*?)\\\]")
 
 
 def _repair_latex(formula: str) -> str:
-    """Turn model shorthand into LaTeX KaTeX can render."""
+    """Turn model shorthand into LaTeX KaTeX can render and repair unclosed sizing tags."""
     formula = formula.replace(r"\displaystyle", " ")
     formula = re.sub(r"(?<!\\),\s*(d[a-zA-Z])", r"\\,\1", formula)
+    # Strip trailing dangling sizing tags with no delimiter (e.g. \bigl with no bracket)
+    formula = re.sub(r"\\(?:left|right|bigl|bigr|Bigl|Bigr|biggl|biggr|Biggl|Biggr)\s*$", "", formula)
+    # Strip lone sizing command where no delimiter follows
+    formula = re.sub(r"\\(?:left|right|bigl|bigr|Bigl|Bigr|biggl|biggr|Biggl|Biggr)(?=\s*($|[^()\[\]{}|.\\/]))", "", formula)
     formula = re.sub(r"\s+", " ", formula).strip(" ,")
     return formula
 
@@ -299,7 +334,7 @@ def _formula_end(text: str, start: int) -> int:
                 break
         elif char == " " and brace == 0 and paren == 0:
             rest = text[index:].lstrip()
-            if rest.startswith(("[", "#")):
+            if rest.startswith("#") or re.match(r"^\[(?:\d{1,2}|Source|Web Source)\b", rest, re.IGNORECASE):
                 break
             word_match = re.match(r"^([a-zA-Z]{2,})\b", rest)
             if word_match and word_match.group(1).lower() in _COMMON_STOP_WORDS:
@@ -373,6 +408,9 @@ def normalize_math(text: str) -> str:
     """Put bare TeX into $$...$$ and fix differentials written with a comma."""
     if not text:
         return ""
+
+    # Convert raw Unicode math symbols (like ∫, ∑, ∂, √, →) into standard LaTeX
+    text = _convert_unicode_math(text)
 
     # Pre-clean: extract citations out of math and collapse duplicate/empty delimiters
     text = _clean_math_citations(text)

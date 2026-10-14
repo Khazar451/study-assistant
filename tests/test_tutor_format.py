@@ -169,3 +169,28 @@ def test_bind_numbered_citations_cleans_math_mode_source_tags():
     assert r"\int u\,dy = uy-\int y\,du" in text
 
 
+def test_nested_bracketed_integral_does_not_break_bigl():
+    raw = r"Substitute back:\n\n\int e^x\cos x\,dx = e^x\sin x - \bigl[ \int e^x\sin x\,dx \bigr] [3]"
+    polished = normalize_math(raw)
+    assert r"\bigl[ \int e^x\sin x\,dx \bigr]" in polished
+    assert "[3]" in polished
+    assert "$$" in polished
+    # Ensure \bigl is never left severed on its own line
+    assert r"\bigl" + "\n" not in polished
+
+
+def test_unicode_math_symbols_converted_to_latex():
+    raw = "Start from ∫ u dv = uv - ∫ v du [1]."
+    polished = normalize_math(raw)
+    assert "∫" not in polished
+    assert r"\int" in polished
+    assert "[1]" in polished
+
+
+def test_dangling_sizing_command_stripped():
+    raw = r"$$\int e^x\,dx = e^x - \bigl$$"
+    polished = normalize_math(raw)
+    assert r"\bigl" not in polished
+    assert r"\int e^x\,dx = e^x -" in polished
+
+

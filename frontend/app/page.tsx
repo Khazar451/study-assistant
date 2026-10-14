@@ -27,6 +27,31 @@ function prepareTutorMarkdown(text: string): string {
   if (!text) return "";
   let cleaned = text.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\uFE0F]/gu, "");
 
+  // Convert raw Unicode math symbols into standard LaTeX
+  const unicodeMathMap: { [k: string]: string } = {
+    "∫": "\\int ",
+    "∬": "\\iint ",
+    "∭": "\\iiint ",
+    "∮": "\\oint ",
+    "∑": "\\sum ",
+    "∏": "\\prod ",
+    "√": "\\sqrt",
+    "∂": "\\partial ",
+    "∞": "\\infty ",
+    "≈": "\\approx ",
+    "≠": "\\ne ",
+    "≤": "\\le ",
+    "≥": "\\ge ",
+    "→": "\\to ",
+    "±": "\\pm ",
+    "·": "\\cdot ",
+    "×": "\\times ",
+    "÷": "\\div ",
+  };
+  for (const [uni, lat] of Object.entries(unicodeMathMap)) {
+    cleaned = cleaned.replaceAll(uni, lat);
+  }
+
   // 1. Unescape escaped hashes: '\#\#' -> '##'
   cleaned = cleaned.replace(/\\+(#{1,6})/g, "$1");
 
@@ -49,6 +74,10 @@ function prepareTutorMarkdown(text: string): string {
   // Convert \[ ... \] to display $$ ... $$ and \( ... \) to inline $ ... $
   cleaned = cleaned.replace(/\\\[([\s\S]*?)\\\]/g, "\n$$\n$1\n$$\n");
   cleaned = cleaned.replace(/\\\(([\s\S]*?)\\\)/g, (_, inner) => `$${inner.trim()}$`);
+
+  // Sanitize dangling sizing tags with no delimiters (e.g. \bigl with no bracket)
+  cleaned = cleaned.replace(/\\(left|right|bigl|bigr|Bigl|Bigr|biggl|biggr|Biggl|Biggr)\s*$/gm, "");
+  cleaned = cleaned.replace(/\\(left|right|bigl|bigr|Bigl|Bigr|biggl|biggr|Biggl|Biggr)(?=\s*($|[^()[\]{}|.\\/]))/g, "");
 
   // 7. Extract citations from math mode ($$ ... $$ and $ ... $)
   // Matches \quad\text{[3]}, \text{[3]}, \tag{[3]}, [3], etc. with optional trailing punctuation
@@ -294,6 +323,7 @@ interface Message {
   references?: ReferenceItem[];
   verification?: VerificationPayload | null;
   timestamp: string;
+  interrupted?: boolean;
 }
 
 interface ReferenceItem {
@@ -568,6 +598,28 @@ export default function StudyAssistantApp() {
   const [flashcardTopic, setFlashcardTopic] = useState("");
 
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  // Stop / interrupt generation mid-stream
+  const handleStop = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setIsGenerating(false);
+  };
+
+  // Keyboard shortcut: Escape cancels generation anywhere in the window
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && isGenerating) {
+        e.preventDefault();
+        handleStop();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isGenerating]);
 
   // Initialize theme from localStorage or system preference
   useEffect(() => {
@@ -668,10 +720,21 @@ export default function StudyAssistantApp() {
     setIsGenerating(true);
 
     const startTime = Date.now();
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
+    let streamedAnswer = "";
+    let finalSources: string[] = [];
+    let finalChunks: any[] = [];
+    let finalModel: string | undefined;
+    let finalProvider: string | undefined;
+    let finalGrounding: Message["grounding"] = "";
+    let finalReferences: ReferenceItem[] = [];
+    let finalVerification: VerificationPayload | null = null;
 
     try {
       const url = `/api/ask/stream?query=${encodeURIComponent(q)}&top_k=${topK}&top_n=${topN}&augment_mode=${augmentMode}&source_mode=${mode}&use_web=false&fallback_to_web=false`;
-      const response = await fetch(url);
+      const response = await fetch(url, { signal: controller.signal });
 
       if (!response.ok || !response.body) {
         throw new Error("Streaming connection failed.");
@@ -679,19 +742,12 @@ export default function StudyAssistantApp() {
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
-      let streamedAnswer = "";
-      let finalSources: string[] = [];
-      let finalChunks: any[] = [];
-      let finalModel: string | undefined;
-      let finalProvider: string | undefined;
-      let finalGrounding: Message["grounding"] = "";
-      let finalReferences: ReferenceItem[] = [];
-      let finalVerification: VerificationPayload | null = null;
 
       let buffer = "";
       while (true) {
+        if (controller.signal.aborted) break;
         const { value, done } = await reader.read();
-        if (done) break;
+        if (done || controller.signal.aborted) break;
 
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split("\n\n");
@@ -728,6 +784,10 @@ export default function StudyAssistantApp() {
         }
       }
 
+      if (controller.signal.aborted) {
+        return;
+      }
+
       const durationMs = Date.now() - startTime;
       setMessages((prev) =>
         prev.map((msg) =>
@@ -747,7 +807,27 @@ export default function StudyAssistantApp() {
             : msg
         )
       );
-    } catch {
+    } catch (err: any) {
+      // Graceful cancellation handling
+      if (controller.signal.aborted || err?.name === "AbortError") {
+        const durationMs = Date.now() - startTime;
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === tutorMsgId
+              ? {
+                  ...msg,
+                  text: streamedAnswer.trim() || "Response stopped.",
+                  sources: finalSources,
+                  chunks: finalChunks,
+                  durationMs,
+                  interrupted: true,
+                }
+              : msg
+          )
+        );
+        return;
+      }
+
       // Fallback: Non-streaming POST
       try {
         const res = await fetch("/api/ask", {
@@ -794,6 +874,7 @@ export default function StudyAssistantApp() {
         );
       }
     } finally {
+      abortControllerRef.current = null;
       setIsGenerating(false);
       fetchStatus();
     }
@@ -1263,6 +1344,14 @@ export default function StudyAssistantApp() {
                         <div className="message-content">{msg.text}</div>
                       )}
 
+                      {/* Interrupted notice */}
+                      {msg.interrupted && (
+                        <div className="interrupted-notice">
+                          <span className="interrupted-dot" />
+                          <span>Generation stopped</span>
+                        </div>
+                      )}
+
                       {/* Cited Sources List */}
                       {msg.references?.some((ref) => ref.image_url) && (
                         <div className="page-figures">
@@ -1345,7 +1434,10 @@ export default function StudyAssistantApp() {
                   value={inputQuery}
                   onChange={(e) => setInputQuery(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
+                    if (e.key === "Escape" && isGenerating) {
+                      e.preventDefault();
+                      handleStop();
+                    } else if (e.key === "Enter" && !e.shiftKey) {
                       e.preventDefault();
                       handleAsk();
                     }
@@ -1396,15 +1488,30 @@ export default function StudyAssistantApp() {
                       </div>
                     )}
                   </div>
-                  <button
-                    className="send-btn"
-                    onClick={() => handleAsk()}
-                    disabled={isGenerating || !inputQuery.trim()}
-                    id="send-button"
-                    type="button"
-                  >
-                    Ask
-                  </button>
+                  {isGenerating ? (
+                    <button
+                      className="stop-btn"
+                      onClick={handleStop}
+                      id="stop-button"
+                      type="button"
+                      title="Stop generating (Esc)"
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                        <rect x="4" y="4" width="16" height="16" rx="2" />
+                      </svg>
+                      <span>Stop</span>
+                    </button>
+                  ) : (
+                    <button
+                      className="send-btn"
+                      onClick={() => handleAsk()}
+                      disabled={!inputQuery.trim()}
+                      id="send-button"
+                      type="button"
+                    >
+                      Ask
+                    </button>
+                  )}
                 </div>
               </div>
             </div>

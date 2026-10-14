@@ -1412,6 +1412,54 @@ body {
   cursor: default;
 }
 
+.stop-btn {
+  margin-left: auto;
+  background: #ef4444;
+  color: #ffffff;
+  border: none;
+  border-radius: 999px;
+  padding: 7px 14px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: background 0.15s ease, transform 0.1s ease;
+  box-shadow: 0 1px 3px rgba(239, 68, 68, 0.25);
+}
+
+.stop-btn:hover {
+  background: #dc2626;
+  transform: scale(1.02);
+}
+
+.stop-btn:active {
+  transform: scale(0.98);
+}
+
+.interrupted-notice {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  color: #f87171;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.interrupted-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ef4444;
+}
+
 .from-tutor .message-bubble {
   background: transparent;
   border: none;

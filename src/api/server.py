@@ -10,7 +10,7 @@ import time
 from typing import Any, Dict, Iterator, List, Optional
 import uuid
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, Response, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
@@ -336,14 +336,25 @@ def _empty_retrieval_notice(mode: str) -> str:
     )
 
 
-def _stream_answer(assistant: Any, query: str, chunks: List[Dict[str, Any]], grounding: str):
+async def _stream_answer(
+    assistant: Any,
+    query: str,
+    chunks: List[Dict[str, Any]],
+    grounding: str,
+    request: Optional[Request] = None,
+):
     """Stream tokens, then replace the answer with a citation-checked final draft."""
     context = assistant.retriever.format_context(chunks) if chunks else ""
     stream = assistant.generator.generate_stream(query=query.strip(), context=context, grounding=grounding)
     full_text: List[str] = []
     for token in stream:
+        if request is not None and await request.is_disconnected():
+            return
         full_text.append(token)
         yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
+
+    if request is not None and await request.is_disconnected():
+        return
 
     answer = polish_tutor_answer(
         "".join(full_text),
@@ -682,7 +693,8 @@ def search_documents(req: SearchRequest) -> Dict[str, Any]:
 
 
 @app.get("/api/ask/stream")
-def ask_stream(
+async def ask_stream(
+    request: Request,
     query: str = Query(..., description="Student question"),
     top_k: int = Query(15, ge=1, le=50),
     top_n: int = Query(5, ge=1, le=20),
@@ -695,12 +707,15 @@ def ask_stream(
     """Server-Sent Events (SSE) token-by-token streaming endpoint for real-time typewriter UI."""
     assistant = get_assistant()
 
-    def event_generator():
+    async def event_generator():
         try:
             # Check empty guards
             if not query or not query.strip():
                 yield f"data: {json.dumps({'type': 'token', 'token': 'Please provide a valid question.'})}\n\n"
                 yield f"data: {json.dumps({'type': 'done', 'sources': []})}\n\n"
+                return
+
+            if await request.is_disconnected():
                 return
 
             mode = _source_mode(source_mode, use_web, fallback_to_web)
@@ -719,6 +734,9 @@ def ask_stream(
                 yield f"data: {json.dumps({'type': 'done', 'answer': notice, 'sources': [], 'references': [], 'grounding': mode if mode != 'both' else 'course'})}\n\n"
                 return
 
+            if await request.is_disconnected():
+                return
+
             # Send candidate chunks event
             chunk_previews = [
                 {
@@ -731,7 +749,8 @@ def ask_stream(
                 for c in chunks
             ]
             yield f"data: {json.dumps({'type': 'chunks', 'chunks': chunk_previews})}\n\n"
-            yield from _stream_answer(assistant, query, chunks, infer_grounding(chunks))
+            async for event in _stream_answer(assistant, query, chunks, infer_grounding(chunks), request=request):
+                yield event
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
 
