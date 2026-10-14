@@ -1597,31 +1597,6 @@ export default function StudyAssistantApp() {
                       )}
 
                       {/* Cited Sources List */}
-                      {msg.references?.some((ref) => ref.image_url) && (
-                        <div className="page-figures">
-                          {msg.references
-                            .filter((ref) => ref.image_url)
-                            .map((ref) => (
-                              <figure
-                                key={`${ref.file_path}-${ref.page}`}
-                                className="page-figure"
-                                onClick={() => {
-                                  if (isPptReference(ref)) {
-                                    scrollToBottomReference(msg.id, ref.n);
-                                  } else {
-                                    openReference(ref, msg.id);
-                                  }
-                                }}
-                                style={{ cursor: "pointer" }}
-                                title={isPptReference(ref) ? "Referansa git" : "Görüntülemek için tıklayın"}
-                              >
-                                <img src={ref.image_url} alt={ref.label} />
-                                <figcaption>{ref.label}</figcaption>
-                              </figure>
-                            ))}
-                        </div>
-                      )}
-
                       {msg.references && msg.references.length > 0 && (
                         <ol className="reference-list">
                           {msg.references.map((ref) => (
