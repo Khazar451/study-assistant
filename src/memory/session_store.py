@@ -162,12 +162,15 @@ class SessionStore:
                         "id": row["id"],
                         "session_id": row["session_id"],
                         "sender": row["sender"],
+                        "role": "assistant" if row["sender"] in ("tutor", "assistant") else "user",
                         "text": row["text"],
+                        "content": row["text"],
                         "sources": sources,
                         "references": refs,
                         "grounding": row["grounding"] or "",
                         "verification": verif,
                         "timestamp": row["timestamp"],
+                        "created_at": row["timestamp"],
                     }
                 )
             return messages
