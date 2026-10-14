@@ -343,10 +343,21 @@ interface ChatSession {
   message_count?: number;
 }
 
-function formatRelativeTime(dateStr: string): string {
-  if (!dateStr) return "";
+function formatRelativeTime(timestampVal: any): string {
+  if (!timestampVal) return "";
   try {
-    const d = new Date(dateStr);
+    let d: Date;
+    if (typeof timestampVal === "number") {
+      const ms = timestampVal < 1e11 ? timestampVal * 1000 : timestampVal;
+      d = new Date(ms);
+    } else if (!isNaN(Number(timestampVal))) {
+      const num = Number(timestampVal);
+      const ms = num < 1e11 ? num * 1000 : num;
+      d = new Date(ms);
+    } else {
+      d = new Date(timestampVal);
+    }
+    if (isNaN(d.getTime())) return "";
     const now = new Date();
     const diffSec = Math.floor((now.getTime() - d.getTime()) / 1000);
     if (diffSec < 60) return "Just now";
@@ -712,16 +723,22 @@ export default function StudyAssistantApp() {
       if (!res.ok) throw new Error("Failed to load session");
       const data = await res.json();
       if (Array.isArray(data.messages) && data.messages.length > 0) {
-        const loaded: Message[] = data.messages.map((m: any) => ({
-          id: m.id || `msg-${Math.random()}`,
-          sender: (m.role === "assistant" || m.role === "tutor") ? "tutor" : "user",
-          text: m.content || "",
-          sources: m.sources || [],
-          references: m.references || [],
-          grounding: m.grounding || "",
-          verification: m.verification || null,
-          timestamp: m.created_at ? formatRelativeTime(m.created_at) : "Earlier",
-        }));
+        const loaded: Message[] = data.messages.map((m: any) => {
+          const rawSender = m.sender || m.role;
+          const sender: "user" | "tutor" =
+            rawSender === "tutor" || rawSender === "assistant" ? "tutor" : "user";
+          const text = m.text || m.content || "";
+          return {
+            id: m.id || `msg-${Math.random()}`,
+            sender,
+            text,
+            sources: m.sources || [],
+            references: m.references || [],
+            grounding: m.grounding || "",
+            verification: m.verification || null,
+            timestamp: formatRelativeTime(m.timestamp || m.created_at) || "Earlier",
+          };
+        });
         setMessages(loaded);
       } else {
         setMessages([defaultWelcomeMessage]);
@@ -1597,31 +1614,6 @@ export default function StudyAssistantApp() {
                       )}
 
                       {/* Cited Sources List */}
-                      {msg.references?.some((ref) => ref.image_url) && (
-                        <div className="page-figures">
-                          {msg.references
-                            .filter((ref) => ref.image_url)
-                            .map((ref) => (
-                              <figure
-                                key={`${ref.file_path}-${ref.page}`}
-                                className="page-figure"
-                                onClick={() => {
-                                  if (isPptReference(ref)) {
-                                    scrollToBottomReference(msg.id, ref.n);
-                                  } else {
-                                    openReference(ref, msg.id);
-                                  }
-                                }}
-                                style={{ cursor: "pointer" }}
-                                title={isPptReference(ref) ? "Referansa git" : "Görüntülemek için tıklayın"}
-                              >
-                                <img src={ref.image_url} alt={ref.label} />
-                                <figcaption>{ref.label}</figcaption>
-                              </figure>
-                            ))}
-                        </div>
-                      )}
-
                       {msg.references && msg.references.length > 0 && (
                         <ol className="reference-list">
                           {msg.references.map((ref) => (

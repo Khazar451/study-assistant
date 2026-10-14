@@ -1319,35 +1319,6 @@ body {
   padding: 0 1px;
 }
 
-.page-figures {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  margin-top: 16px;
-}
-
-.page-figure {
-  margin: 0;
-  border: 1px solid var(--border-subtle);
-  border-radius: 10px;
-  overflow: hidden;
-  background: #fff;
-}
-
-.page-figure img {
-  display: block;
-  width: 100%;
-  height: auto;
-}
-
-.page-figure figcaption {
-  font-family: var(--font-sans);
-  font-size: 12px;
-  color: var(--text-muted);
-  padding: 8px 10px;
-  background: var(--bg-secondary);
-}
-
 .reference-list {
   margin: 14px 0 0;
   padding-left: 18px;
