@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 from src.ingestion.embedder import NvidiaEmbedder
 from src.ingestion.indexer import ChromaIndexer
@@ -150,15 +151,33 @@ class StudyRetriever:
         # 2. Retrieve chunks for each query and aggregate with max-score pooling
         merged_chunks: Dict[str, Dict[str, Any]] = {}
 
-        for sub_query in augmented_queries:
-            sub_results = self.retrieve(
-                query=sub_query,
-                top_k=limit,
-                where=where,
-                score_threshold=None,  # Filter threshold after pooling
-                augment=False,
-            )
+        failures: List[Exception] = []
 
+        def search_one(sub_query: str) -> List[Dict[str, Any]]:
+            try:
+                return self.retrieve(
+                    query=sub_query,
+                    top_k=limit,
+                    where=where,
+                    score_threshold=None,  # Filter threshold after pooling
+                    augment=False,
+                )
+            except Exception as exc:  # one failed variant must not sink the whole question
+                failures.append(exc)
+                return []
+
+        # Query variants are independent network round-trips (embedding calls), so run them
+        # concurrently; results keep the original order so pooling stays deterministic.
+        if len(augmented_queries) > 1:
+            with ThreadPoolExecutor(max_workers=min(len(augmented_queries), 6)) as pool:
+                all_results = list(pool.map(search_one, augmented_queries))
+        else:
+            all_results = [search_one(augmented_queries[0])]
+
+        if failures and len(failures) == len(augmented_queries):
+            raise failures[0]
+
+        for sub_results in all_results:
             for chunk in sub_results:
                 chunk_id = (
                     chunk.get("id")

@@ -159,3 +159,35 @@ def test_retrieve_with_augment_flag(mock_embedder, in_memory_indexer):
     assert "derivative" in results[0]["text"]
 
 
+
+
+def test_augmented_retrieval_survives_one_failed_variant():
+    from unittest.mock import MagicMock
+    from src.retrieval.retriever import StudyRetriever
+
+    embedder = MagicMock()
+    embedder.embed_query.side_effect = [RuntimeError("stalled"), [0.1, 0.2], [0.3, 0.4]]
+    indexer = MagicMock()
+    indexer.query.return_value = [{"id": "a", "text": "Kepler", "metadata": {}, "distance": 0.1}]
+    augmenter = MagicMock()
+    augmenter.augment.return_value = ["q1", "q2", "q3"]
+
+    retriever = StudyRetriever(indexer=indexer, embedder=embedder, augmenter=augmenter)
+    results = retriever.retrieve_augmented("kepler")
+
+    assert [r["id"] for r in results] == ["a"]
+
+
+def test_augmented_retrieval_raises_when_every_variant_fails():
+    from unittest.mock import MagicMock
+    import pytest
+    from src.retrieval.retriever import StudyRetriever
+
+    embedder = MagicMock()
+    embedder.embed_query.side_effect = RuntimeError("down")
+    augmenter = MagicMock()
+    augmenter.augment.return_value = ["q1", "q2"]
+
+    retriever = StudyRetriever(indexer=MagicMock(), embedder=embedder, augmenter=augmenter)
+    with pytest.raises(RuntimeError):
+        retriever.retrieve_augmented("kepler")

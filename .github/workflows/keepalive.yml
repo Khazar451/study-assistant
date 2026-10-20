@@ -1,0 +1,15 @@
+name: Keep demo awake
+
+# Pings the hosted demo so the free Render instance does not spin down.
+# /api/status calls no model, so it costs nothing.
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping demo
+        run: curl -fsS --max-time 90 --retry 2 https://study-assistant-hfmk.onrender.com/api/status

@@ -1079,11 +1079,15 @@ def _auto_ingest_sample() -> None:
         return
 
     def worker() -> None:
-        try:
-            if get_assistant().count() == 0:
-                ingest_sample()
-        except Exception as exc:  # best effort: the demo still works without the sample
-            logging.getLogger(__name__).warning("Sample auto-ingest skipped: %s", exc)
+        log = logging.getLogger(__name__)
+        for attempt in range(1, 4):  # the hosted embedding API stalls now and then; retry
+            try:
+                if get_assistant().count() == 0:
+                    ingest_sample()
+                return
+            except Exception as exc:  # best effort: the demo still works without the sample
+                log.warning("Sample auto-ingest attempt %d failed: %s", attempt, exc)
+                time.sleep(5 * attempt)
 
     threading.Thread(target=worker, name="auto-ingest-sample", daemon=True).start()
 

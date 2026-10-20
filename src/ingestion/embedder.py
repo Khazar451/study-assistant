@@ -44,9 +44,9 @@ class NvidiaEmbedder:
 
     # The hosted NIM endpoint intermittently stalls a request (a normal reply takes ~0.3 s),
     # so a single embedding fails fast and is retried instead of hanging the student for minutes.
-    QUERY_TIMEOUT = 4.0
+    QUERY_TIMEOUT = 3.5
 
-    def embed_text(self, text: str, input_type: str = "passage", max_retries: int = 6) -> List[float]:
+    def embed_text(self, text: str, input_type: str = "passage", max_retries: int = 8) -> List[float]:
         last_err: Optional[Exception] = None
         for attempt in range(max_retries):
             try:
