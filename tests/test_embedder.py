@@ -38,6 +38,7 @@ def test_embed_text_calls_api_with_passage():
         input=["Sample lecture text"],
         encoding_format="float",
         extra_body={"input_type": "passage", "truncate": "NONE"},
+        timeout=NvidiaEmbedder.QUERY_TIMEOUT,
     )
 
 
@@ -59,6 +60,7 @@ def test_embed_query_sets_query_input_type():
         input=["What is Newton's second law?"],
         encoding_format="float",
         extra_body={"input_type": "query", "truncate": "NONE"},
+        timeout=NvidiaEmbedder.QUERY_TIMEOUT,
     )
 
 
@@ -109,3 +111,16 @@ def test_embed_chunks_supports_dicts_and_objects():
 
     assert processed[0]["embedding"] == [0.11, 0.22]
     assert processed[1].embedding == [0.33, 0.44]
+
+
+def test_embed_text_retries_after_a_stalled_request(monkeypatch):
+    monkeypatch.setattr("src.ingestion.embedder.time.sleep", lambda _s: None)
+    embedder = NvidiaEmbedder(api_key="nvapi-test-key")
+
+    mock_client = MagicMock()
+    ok = SimpleNamespace(data=[SimpleNamespace(embedding=[0.7, 0.8])])
+    mock_client.embeddings.create.side_effect = [TimeoutError("stalled"), ok]
+    embedder.client = mock_client
+
+    assert embedder.embed_query("Kepler's first law") == [0.7, 0.8]
+    assert mock_client.embeddings.create.call_count == 2

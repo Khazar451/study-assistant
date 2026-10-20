@@ -126,8 +126,9 @@ RAG_QUERIES_TOTAL = Counter(
     ["mode", "use_web"],
 )
 
-# Global singleton instance
+# Global singleton instance (guarded: the startup sample-ingest thread and the first request can race)
 _assistant_instance: Optional[StudyAssistant] = None
+_assistant_lock = threading.Lock()
 
 
 class OfflineFallbackEmbedder:
@@ -153,7 +154,7 @@ class OfflineFallbackEmbedder:
     def embed_query(self, query: str) -> List[float]:
         return self._hash_vector(query)
 
-    def embed_batch(self, texts: List[str], input_type: str = "passage", batch_size: int = 32) -> List[List[float]]:
+    def embed_batch(self, texts: List[str], input_type: str = "passage", batch_size: int = 32, **_: Any) -> List[List[float]]:
         return [self._hash_vector(t) for t in texts]
 
 
@@ -215,7 +216,11 @@ class OfflineFallbackReranker:
 def get_assistant(db_path: str = "./chroma_db") -> StudyAssistant:
     """Retrieve or initialize the singleton StudyAssistant orchestrator."""
     global _assistant_instance
-    if _assistant_instance is None:
+    if _assistant_instance is not None:
+        return _assistant_instance
+    with _assistant_lock:
+        if _assistant_instance is not None:
+            return _assistant_instance
         try:
             _assistant_instance = StudyAssistant(persist_directory=db_path)
         except ValueError:
@@ -1059,6 +1064,34 @@ def delete_chat_session(session_id: str) -> Dict[str, Any]:
     if not success:
         raise HTTPException(status_code=404, detail="Session not found")
     return {"success": True, "id": session_id}
+
+
+# --- Single-process hosting: serve the static frontend build and pre-index the sample ---
+# `STATIC_EXPORT=1 npm run build` in frontend/ produces frontend/out. When present, FastAPI serves it
+# at "/" (after every API route, so /api/* and /metrics win). AUTO_INGEST_SAMPLE=true indexes the
+# bundled sample on startup so a fresh, ephemeral deployment is never empty.
+_FRONTEND_DIR = Path(os.getenv("FRONTEND_DIR", "./frontend/out"))
+
+
+@app.on_event("startup")
+def _auto_ingest_sample() -> None:
+    if os.getenv("AUTO_INGEST_SAMPLE", "false").strip().lower() not in {"1", "true", "yes"}:
+        return
+
+    def worker() -> None:
+        try:
+            if get_assistant().count() == 0:
+                ingest_sample()
+        except Exception as exc:  # best effort: the demo still works without the sample
+            logging.getLogger(__name__).warning("Sample auto-ingest skipped: %s", exc)
+
+    threading.Thread(target=worker, name="auto-ingest-sample", daemon=True).start()
+
+
+if _FRONTEND_DIR.is_dir():
+    from fastapi.staticfiles import StaticFiles
+
+    app.mount("/", StaticFiles(directory=str(_FRONTEND_DIR), html=True), name="frontend")
 
 
 if __name__ == "__main__":

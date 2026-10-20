@@ -1,0 +1,17 @@
+.git
+.github
+.env
+.env.*
+!.env.example
+.venv
+venv
+node_modules
+frontend/node_modules
+frontend/.next
+chroma_db
+data
+.logs
+.pytest_cache
+__pycache__
+*.pyc
+tests

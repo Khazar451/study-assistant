@@ -38,18 +38,31 @@ class NvidiaEmbedder:
         self.client = OpenAI(
             api_key=self.api_key,
             base_url=self.base_url,
-            timeout=120.0,
+            timeout=15.0,  # stalled requests are retried; single queries use the shorter QUERY_TIMEOUT below
             max_retries=0,
         )
 
-    def embed_text(self, text: str, input_type: str = "passage") -> List[float]:
-        response = self.client.embeddings.create(
-            model=self.model,
-            input=[text],
-            encoding_format="float",
-            extra_body={"input_type": input_type, "truncate": "NONE"},
-        )
-        return response.data[0].embedding
+    # The hosted NIM endpoint intermittently stalls a request (a normal reply takes ~0.3 s),
+    # so a single embedding fails fast and is retried instead of hanging the student for minutes.
+    QUERY_TIMEOUT = 4.0
+
+    def embed_text(self, text: str, input_type: str = "passage", max_retries: int = 6) -> List[float]:
+        last_err: Optional[Exception] = None
+        for attempt in range(max_retries):
+            try:
+                response = self.client.embeddings.create(
+                    model=self.model,
+                    input=[text],
+                    encoding_format="float",
+                    extra_body={"input_type": input_type, "truncate": "NONE"},
+                    timeout=self.QUERY_TIMEOUT,
+                )
+                return response.data[0].embedding
+            except Exception as exc:
+                last_err = exc
+                if attempt < max_retries - 1:
+                    time.sleep(0.5)
+        raise last_err or RuntimeError("Embedding request failed")
 
     def embed_query(self, query: str) -> List[float]:
         return self.embed_text(query, input_type="query")

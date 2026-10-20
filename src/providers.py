@@ -9,7 +9,7 @@ NVIDIA_DEFAULT_MODEL = "meta/llama-3.2-11b-vision-instruct"
 NEBIUS_BASE_URL = "https://api.tokenfactory.nebius.com/v1/"
 NEBIUS_ANSWER_MODEL = "nvidia/nemotron-3-super-120b-a12b"
 NEBIUS_FAST_MODEL = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B"
-NEBIUS_REASONING_MODEL = "nvidia/nemotron-3-ultra-550b-a55b"
+NEBIUS_REASONING_MODEL = "nvidia/Nemotron-3-Ultra-550b-a55b"
 
 PROVIDER_LABELS = {
     "nebius": "Nebius Token Factory",

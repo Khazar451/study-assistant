@@ -21,7 +21,7 @@
 ## For judges
 
 - **Track:** Best Apps and Agents. Also eligible for Best Use of Tavily.
-- **Required runtime:** Chat completions go to **Nebius Token Factory** (`https://api.tokenfactory.nebius.com/v1/`). Answers use NVIDIA **Nemotron 3 Super** (`nvidia/nemotron-3-super-120b-a12b`); derivations, proofs and calculations are escalated to **Nemotron 3 Ultra** (`nvidia/nemotron-3-ultra-550b-a55b`) with automatic fallback to Super. Query rewrite and rerank use NVIDIA **Nemotron 3 Nano** (`nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B`). Embeddings stay on NVIDIA NIM (`nvidia/llama-nemotron-embed-vl-1b-v2`).
+- **Required runtime:** Chat completions go to **Nebius Token Factory** (`https://api.tokenfactory.nebius.com/v1/`). Answers use NVIDIA **Nemotron 3 Super** (`nvidia/nemotron-3-super-120b-a12b`); derivations, proofs and calculations are escalated to **Nemotron 3 Ultra** (`nvidia/Nemotron-3-Ultra-550b-a55b`) with automatic fallback to Super. Query rewrite and rerank use NVIDIA **Nemotron 3 Nano** (`nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B`). Embeddings stay on NVIDIA NIM (`nvidia/llama-nemotron-embed-vl-1b-v2`).
 - **5-minute run:** copy `.env.example` to `.env.local`, set `NEBIUS_API_KEY`, `NVIDIA_API_KEY`, and `TAVILY_API_KEY`, then `bin/study-assistant`. Open the printed frontend URL. Under **Notes**, load a PDF (up to 200 MB). Ask a question with the source switch on **Notes**, **Web**, or **Both**. A cited page is drawn under the answer. Ask for a plot and a comparison and the reply includes a rendered graph and a markdown table.
 - **What makes it different:** math in answers is **checked with SymPy** and shown with a "verified" card (the model is not just trusted); every citation renders the **actual source page**; the student chooses **Notes / Web / Both** so grounding is explicit; chat history persists across sessions.
 - **Built during the submission window (opened 26 Aug 2026):** this repository's first commit is 17 Sep 2026, so the whole project is new work. Grounded RAG tutor, Token Factory Nemotron routing (Super, Nano, Ultra), Tavily academic search, numbered citations, KaTeX formulas, SymPy verification, cited-page images, 2D/3D plots, persistent chat memory, PPTX and slide-image ingestion, flashcards, Next.js + FastAPI UI, tests and CI.
@@ -242,7 +242,7 @@ To empirically prove that our architectural innovations yield measurable improve
 | Capability | Where | What it does |
 | :--- | :--- | :--- |
 | **Symbolic verification** | [`src/verification/symbolic_verifier.py`](src/verification/symbolic_verifier.py) | Extracts equations from the tutor's answer, checks identities with SymPy (differentiation, simplification, numeric spot checks), and only shows a "verified" card when an equation is conclusively confirmed. The card includes a runnable Python snippet and a Wolfram Alpha cross-check link. Inconclusive results are never shown. |
-| **Nemotron 3 Ultra routing** | [`src/providers.py`](src/providers.py), [`src/generation/generator.py`](src/generation/generator.py) | Questions that look like derivations, proofs, integrals or calculations go to `nemotron-3-ultra-550b-a55b`; everything else stays on Super. If Ultra is unavailable the call falls back to Super, and the model name under each answer shows which one answered. Disable with `ENABLE_REASONING_ROUTER=false`. |
+| **Nemotron 3 Ultra routing** | [`src/providers.py`](src/providers.py), [`src/generation/generator.py`](src/generation/generator.py) | Questions that look like derivations, proofs, integrals or calculations go to `nvidia/Nemotron-3-Ultra-550b-a55b`; everything else stays on Super. If Ultra is unavailable the call falls back to Super, and the model name under each answer shows which one answered. Disable with `ENABLE_REASONING_ROUTER=false`. |
 | **Persistent multi-turn memory** | [`src/memory/session_store.py`](src/memory/session_store.py) | SQLite-backed chat sessions (create, rename, delete, restore) with sources, references and verification stored per message. The last turns are sent back to the model as history. |
 
 ### 3.9 Deploying a Public Demo Safely
@@ -424,7 +424,7 @@ NEBIUS_API_KEY=your-nebius-token-factory-key-here
 NEBIUS_BASE_URL=https://api.tokenfactory.nebius.com/v1/
 NEBIUS_MODEL=nvidia/nemotron-3-super-120b-a12b
 NEBIUS_FAST_MODEL=nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B
-NEBIUS_REASONING_MODEL=nvidia/nemotron-3-ultra-550b-a55b
+NEBIUS_REASONING_MODEL=nvidia/Nemotron-3-Ultra-550b-a55b
 
 # NVIDIA NIM: embeddings, slide vision, and LLM fallback
 NVIDIA_API_KEY=nvapi-your-key-here
