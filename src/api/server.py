@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import os
@@ -10,7 +11,7 @@ import time
 from typing import Any, Dict, Iterator, List, Optional
 import uuid
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
@@ -21,6 +22,7 @@ from src.assistant import StudyAssistant
 from src.generation.plots import embed_plots, ensure_requested_plot
 from src.ingestion.page_images import attach_page_images, is_library_file, render_pdf_page
 from src.generation.tutor_format import allowed_source_keys, bind_numbered_citations, infer_grounding, polish_tutor_answer
+from src import providers
 from src.providers import PROVIDER_LABELS
 from src.verification.symbolic_verifier import verify_math_solution
 
@@ -34,14 +36,74 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# Enable CORS for Next.js frontend
+# --- Deployment hardening (all optional; local development stays open) ---
+# CORS_ORIGINS: comma-separated allowed origins ("*" by default for local dev).
+# DEMO_MODE=true: the public demo cannot wipe the shared index unless ADMIN_TOKEN matches.
+# ADMIN_TOKEN: when set, destructive endpoints require the X-Admin-Token header.
+# RATE_LIMIT_PER_MIN: per-client cap on the endpoints that spend LLM credits (0 disables).
+# MAX_UPLOAD_MB: upload size cap (default 200).
+_cors_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",") if o.strip()] or ["*"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials="*" not in _cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+_RATE_LIMITED_PATHS = {"/api/ask", "/api/ask/stream", "/api/search", "/api/flashcards", "/api/ingest/file"}
+_rate_hits: Dict[str, List[float]] = {}
+_rate_lock = threading.Lock()
+
+
+def _demo_mode() -> bool:
+    return os.getenv("DEMO_MODE", "false").strip().lower() in {"1", "true", "yes"}
+
+
+def _rate_limit_per_min() -> int:
+    try:
+        return max(0, int(os.getenv("RATE_LIMIT_PER_MIN", "0")))
+    except ValueError:
+        return 0
+
+
+def _client_key(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+@app.middleware("http")
+async def rate_limit_llm_endpoints(request: Request, call_next):
+    limit = _rate_limit_per_min()
+    if limit and request.url.path in _RATE_LIMITED_PATHS and request.method != "OPTIONS":
+        now = time.time()
+        key = _client_key(request)
+        with _rate_lock:
+            hits = [t for t in _rate_hits.get(key, []) if now - t < 60]
+            if len(hits) >= limit:
+                _rate_hits[key] = hits
+                retry = int(60 - (now - hits[0])) + 1
+                return JSONResponse(
+                    status_code=429,
+                    content={"detail": f"Rate limit reached ({limit}/min). Try again in {retry}s."},
+                    headers={"Retry-After": str(retry)},
+                )
+            hits.append(now)
+            _rate_hits[key] = hits
+    return await call_next(request)
+
+
+def require_admin(x_admin_token: Optional[str] = Header(None)) -> None:
+    """Guard destructive endpoints on a shared deployment; open for local development."""
+    expected = os.getenv("ADMIN_TOKEN", "")
+    if expected:
+        if not x_admin_token or not hmac.compare_digest(x_admin_token, expected):
+            raise HTTPException(status_code=403, detail="Admin token required.")
+    elif _demo_mode():
+        raise HTTPException(status_code=403, detail="Disabled in the public demo.")
+
 
 # --- Prometheus Metrics Definitions ---
 HTTP_REQUESTS_TOTAL = Counter(
@@ -405,7 +467,7 @@ async def _stream_answer(
         "sources": sources,
         "references": references,
         "grounding": grounding,
-        "model": getattr(assistant.generator, "model", ""),
+        "model": providers.answer_model(assistant.generator),
         "provider": _provider_label(assistant.generator),
         "verification": verification,
         "session_id": session_id,
@@ -482,7 +544,7 @@ def get_documents() -> Dict[str, Any]:
 ingestion_jobs: Dict[str, Dict[str, Any]] = {}
 _ingest_lock = threading.Lock()
 _log = logging.getLogger("study.ingest")
-MAX_UPLOAD_BYTES = 200 * 1024 * 1024
+MAX_UPLOAD_BYTES = int(float(os.getenv("MAX_UPLOAD_MB", "200")) * 1024 * 1024)
 
 
 def _run_ingestion_worker(job_id: str, target_path: Path, filename: str) -> None:
@@ -536,7 +598,7 @@ async def _save_upload(file: UploadFile, target_path: Path) -> int:
                 if size > MAX_UPLOAD_BYTES:
                     raise HTTPException(
                         status_code=413,
-                        detail="This file is larger than 200 MB. Split the book or upload a smaller PDF.",
+                        detail=f"This file is larger than {MAX_UPLOAD_BYTES // (1024 * 1024)} MB. Split the book or upload a smaller PDF.",
                     )
                 handle.write(block)
     except Exception:
@@ -935,7 +997,7 @@ def generate_flashcards(req: FlashcardsRequest) -> Dict[str, Any]:
         return {"flashcards": cards, "total": len(cards), "fallback": True}
 
 
-@app.post("/api/clear")
+@app.post("/api/clear", dependencies=[Depends(require_admin)])
 def clear_database() -> Dict[str, Any]:
     """Clear all indexed document chunks from ChromaDB."""
     assistant = get_assistant()

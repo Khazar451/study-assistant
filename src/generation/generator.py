@@ -1,3 +1,5 @@
+import logging
+import os
 import re
 from typing import Any, Dict, Iterator, List, Optional, Union
 from dotenv import load_dotenv
@@ -9,6 +11,8 @@ from src.generation.tutor_format import polish_tutor_answer
 # Automatically load environment variables from .env.local or .env
 load_dotenv(".env.local")
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 
 class StudyGenerator:
@@ -123,6 +127,15 @@ class StudyGenerator:
 
         self.provider_label = providers.PROVIDER_LABELS.get(self.provider, self.provider)
 
+        # Nemotron 3 Ultra handles derivations/proofs on Token Factory; Super handles the rest.
+        # Only used when the answer model was resolved from the environment (not pinned by the caller).
+        self.reasoning_model: Optional[str] = None
+        if not api_key and not model and self.provider == "nebius":
+            reasoning = providers.resolve_llm_provider("reasoning")
+            if reasoning and os.getenv("ENABLE_REASONING_ROUTER", "true").lower() != "false":
+                self.reasoning_model = reasoning.model
+        self.last_model = self.model
+
         self.client = client or OpenAI(
             api_key=self.api_key,
             base_url=self.base_url,
@@ -179,6 +192,23 @@ class StudyGenerator:
             return self.GENERAL_SYSTEM_PROMPT
         return self.system_prompt
 
+    def _create_completion(self, query: str, messages: List[Dict[str, str]], stream: bool):
+        """Call the chat API, escalating hard questions to the reasoning model with a safe fallback."""
+        kwargs: Dict[str, Any] = {"messages": messages, "temperature": self.temperature}
+        if stream:
+            kwargs["stream"] = True
+        if self.reasoning_model and providers.needs_deep_reasoning(query):
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.reasoning_model, max_tokens=max(self.max_tokens, 4000), **kwargs
+                )
+                self.last_model = self.reasoning_model
+                return response
+            except Exception as exc:  # model unavailable / rate limited: fall back to the answer model
+                logger.warning("Reasoning model %s failed (%s); using %s", self.reasoning_model, exc, self.model)
+        self.last_model = self.model
+        return self.client.chat.completions.create(model=self.model, max_tokens=self.max_tokens, **kwargs)
+
     def generate(
         self,
         query: str,
@@ -232,12 +262,7 @@ class StudyGenerator:
                     messages.append({"role": role, "content": content})
         messages.append({"role": "user", "content": user_content})
 
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=self.temperature,
-            max_tokens=self.max_tokens,
-        )
+        response = self._create_completion(query, messages, stream=False)
 
         answer_text = polish_tutor_answer(
             providers.normalize_citation_brackets(
@@ -249,7 +274,7 @@ class StudyGenerator:
 
         return {
             "answer": answer_text,
-            "model": self.model,
+            "model": self.last_model,
             "provider": self.provider,
             "provider_label": self.provider_label,
             "sources": sources,
@@ -301,13 +326,7 @@ class StudyGenerator:
                     messages.append({"role": role, "content": content})
         messages.append({"role": "user", "content": user_content})
 
-        stream = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=self.temperature,
-            max_tokens=self.max_tokens,
-            stream=True,
-        )
+        stream = self._create_completion(query, messages, stream=True)
 
         tokens = (
             chunk.choices[0].delta.content

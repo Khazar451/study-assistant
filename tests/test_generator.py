@@ -184,3 +184,56 @@ def test_generate_stream_empty_query():
     generator = StudyGenerator(api_key="dummy-key", client=MagicMock())
     tokens = list(generator.generate_stream(query="   ", context="some context"))
     assert "".join(tokens) == "Please provide a valid question."
+
+
+def _nebius_generator(monkeypatch, client):
+    monkeypatch.setenv("NEBIUS_API_KEY", "neb-test-key")
+    monkeypatch.delenv("NEBIUS_MODEL", raising=False)
+    monkeypatch.delenv("NEBIUS_REASONING_MODEL", raising=False)
+    monkeypatch.delenv("ENABLE_REASONING_ROUTER", raising=False)
+    return StudyGenerator(client=client)
+
+
+def test_hard_math_question_routes_to_ultra(monkeypatch, mock_openai_client):
+    generator = _nebius_generator(monkeypatch, mock_openai_client)
+    result = generator.generate("Derive the integral of x*e^x", context="[Document 1] x")
+
+    used = mock_openai_client.chat.completions.create.call_args.kwargs
+    assert "ultra" in used["model"].lower()
+    assert used["max_tokens"] >= 4000
+    assert "ultra" in result["model"].lower()
+
+
+def test_simple_question_stays_on_super(monkeypatch, mock_openai_client):
+    generator = _nebius_generator(monkeypatch, mock_openai_client)
+    result = generator.generate("What is Kepler's first law?", context="[Document 1] x")
+
+    assert "super" in mock_openai_client.chat.completions.create.call_args.kwargs["model"].lower()
+    assert "super" in result["model"].lower()
+
+
+def test_ultra_failure_falls_back_to_super(monkeypatch, mock_openai_client):
+    good = mock_openai_client.chat.completions.create.return_value
+    calls = []
+
+    def fake_create(**kwargs):
+        calls.append(kwargs["model"])
+        if "ultra" in kwargs["model"].lower():
+            raise RuntimeError("model not found")
+        return good
+
+    mock_openai_client.chat.completions.create.side_effect = fake_create
+    generator = _nebius_generator(monkeypatch, mock_openai_client)
+    result = generator.generate("Prove that sqrt(2) is irrational", context="[Document 1] x")
+
+    assert "ultra" in calls[0].lower() and "super" in calls[1].lower()
+    assert "super" in result["model"].lower()
+
+
+def test_router_can_be_disabled(monkeypatch, mock_openai_client):
+    monkeypatch.setenv("ENABLE_REASONING_ROUTER", "false")
+    monkeypatch.setenv("NEBIUS_API_KEY", "neb-test-key")
+    generator = StudyGenerator(client=mock_openai_client)
+    generator.generate("Derive the integral of x*e^x", context="[Document 1] x")
+
+    assert "super" in mock_openai_client.chat.completions.create.call_args.kwargs["model"].lower()

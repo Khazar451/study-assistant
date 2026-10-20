@@ -9,6 +9,7 @@ NVIDIA_DEFAULT_MODEL = "meta/llama-3.2-11b-vision-instruct"
 NEBIUS_BASE_URL = "https://api.tokenfactory.nebius.com/v1/"
 NEBIUS_ANSWER_MODEL = "nvidia/nemotron-3-super-120b-a12b"
 NEBIUS_FAST_MODEL = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B"
+NEBIUS_REASONING_MODEL = "nvidia/nemotron-3-ultra-550b-a55b"
 
 PROVIDER_LABELS = {
     "nebius": "Nebius Token Factory",
@@ -45,13 +46,16 @@ def resolve_llm_provider(role: str = "answer") -> Optional[LLMProvider]:
     """Pick the chat-completion provider from the environment.
 
     Nebius Token Factory wins whenever NEBIUS_API_KEY is set. `role="answer"` selects the
-    reasoning model used for tutor answers; `role="fast"` selects the low-latency model used
-    for query augmentation and reranking.
+    everyday model used for tutor answers; `role="reasoning"` selects the heavy model
+    (Nemotron 3 Ultra) used for math and multi-step questions; `role="fast"` selects the
+    low-latency model used for query augmentation and reranking.
     """
     nebius_key = os.getenv("NEBIUS_API_KEY")
     if nebius_key:
         if role == "answer":
             model = os.getenv("NEBIUS_MODEL", NEBIUS_ANSWER_MODEL)
+        elif role == "reasoning":
+            model = os.getenv("NEBIUS_REASONING_MODEL", NEBIUS_REASONING_MODEL)
         else:
             model = os.getenv("NEBIUS_FAST_MODEL", NEBIUS_FAST_MODEL)
         return LLMProvider(
@@ -142,3 +146,25 @@ def filter_reasoning_stream(tokens: Iterable[str]) -> Iterator[str]:
                 break
     if buffer and not in_think:
         yield buffer
+
+
+_REASONING_QUERY_RE = re.compile(
+    r"\b(prove|proof|derive|derivation|solve|integrate|integral|differentiate|derivative|"
+    r"limit|series|eigen\w*|matrix|determinant|theorem|lemma|calculate|compute|evaluate|"
+    r"simplify|show that|step[- ]by[- ]step|why does|optimi[sz]e)\b|[=^\\∫∑∂√]",
+    re.IGNORECASE,
+)
+
+
+def needs_deep_reasoning(query: str) -> bool:
+    """Heuristic: route derivations, proofs, and calculations to the heavy reasoning model."""
+    return bool(query and _REASONING_QUERY_RE.search(query))
+
+
+def answer_model(generator) -> str:
+    """Model that actually produced the last answer (the router may pick a heavier model)."""
+    for attr in ("last_model", "model"):
+        value = getattr(generator, attr, None)
+        if isinstance(value, str) and value:
+            return value
+    return ""

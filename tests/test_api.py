@@ -278,3 +278,29 @@ def test_api_chat_sessions_crud(client, mock_assistant):
     assert get_404.status_code == 404
 
 
+
+
+def test_clear_blocked_in_demo_mode(client, mock_assistant, monkeypatch):
+    monkeypatch.setenv("DEMO_MODE", "true")
+    monkeypatch.delenv("ADMIN_TOKEN", raising=False)
+    assert client.post("/api/clear").status_code == 403
+    mock_assistant.clear.assert_not_called()
+
+
+def test_clear_requires_admin_token_when_configured(client, mock_assistant, monkeypatch):
+    monkeypatch.setenv("ADMIN_TOKEN", "s3cret")
+    assert client.post("/api/clear").status_code == 403
+    assert client.post("/api/clear", headers={"X-Admin-Token": "wrong"}).status_code == 403
+    mock_assistant.count.return_value = 0
+    assert client.post("/api/clear", headers={"X-Admin-Token": "s3cret"}).status_code == 200
+
+
+def test_rate_limit_blocks_llm_endpoint(client, monkeypatch):
+    from src.api import server
+
+    server._rate_hits.clear()
+    monkeypatch.setenv("RATE_LIMIT_PER_MIN", "2")
+    statuses = [client.post("/api/search", json={"query": "orbits"}).status_code for _ in range(3)]
+    assert statuses[:2] == [200, 200]
+    assert statuses[2] == 429
+    server._rate_hits.clear()

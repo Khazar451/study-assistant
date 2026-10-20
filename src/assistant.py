@@ -17,6 +17,7 @@ from src.retrieval.query_augmenter import QueryAugmenter
 from src.retrieval.reranker import StudyReranker
 from src.retrieval.retriever import StudyRetriever
 from src.retrieval.tavily_search import TavilySearchClient
+from src import providers
 from src.generation.generator import StudyGenerator
 from src.generation.tutor_format import allowed_source_keys, infer_grounding
 
@@ -201,7 +202,7 @@ class StudyAssistant:
                 "answer": msg,
                 "sources": [],
                 "chunks": [],
-                "model": getattr(self.generator, "model", ""),
+                "model": providers.answer_model(self.generator),
                 "provider": getattr(self.generator, "provider", ""),
                 "session_id": session_id,
             }
@@ -253,7 +254,7 @@ class StudyAssistant:
                 "answer": msg,
                 "sources": [],
                 "chunks": [],
-                "model": getattr(self.generator, "model", ""),
+                "model": providers.answer_model(self.generator),
                 "provider": getattr(self.generator, "provider", ""),
                 "session_id": session_id,
             }
