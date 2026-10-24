@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from starlette.concurrency import run_in_threadpool
+from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
 from pydantic import BaseModel, Field
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 
@@ -423,13 +423,18 @@ async def _stream_answer(
     session_id: Optional[str] = None,
     history: Optional[List[Dict[str, str]]] = None,
 ):
-    """Stream tokens, then replace the answer with a citation-checked final draft and persist to session."""
+    """Stream tokens, then replace the answer with a citation-checked final draft and persist to session.
+
+    The model stream and the post-processing are blocking (HTTP reads, PyMuPDF, matplotlib, SymPy,
+    SQLite), so they run in the threadpool; on the event loop they would stall every other visitor.
+    """
     context = assistant.retriever.format_context(chunks) if chunks else ""
-    stream = assistant.generator.generate_stream(
-        query=query.strip(), context=context, grounding=grounding, history=history
+    stream = await run_in_threadpool(
+        assistant.generator.generate_stream,
+        query=query.strip(), context=context, grounding=grounding, history=history,
     )
     full_text: List[str] = []
-    for token in stream:
+    async for token in iterate_in_threadpool(stream):
         if request is not None and await request.is_disconnected():
             return
         full_text.append(token)
@@ -438,8 +443,24 @@ async def _stream_answer(
     if request is not None and await request.is_disconnected():
         return
 
+    done_event = await run_in_threadpool(
+        _finalize_answer, assistant, query, "".join(full_text), chunks, context, grounding, session_id
+    )
+    yield f"data: {json.dumps(done_event)}\n\n"
+
+
+def _finalize_answer(
+    assistant: Any,
+    query: str,
+    raw_answer: str,
+    chunks: List[Dict[str, Any]],
+    context: str,
+    grounding: str,
+    session_id: Optional[str],
+) -> Dict[str, Any]:
+    """Polish, cite, illustrate and verify a streamed answer, persist the turn, and build the done event."""
     answer = polish_tutor_answer(
-        "".join(full_text),
+        raw_answer,
         allowed_sources=allowed_source_keys(chunks, context),
         grounding=grounding,
     )
@@ -466,7 +487,7 @@ async def _stream_answer(
             verification=verification,
         )
 
-    done_event = {
+    return {
         "type": "done",
         "answer": answer,
         "sources": sources,
@@ -477,7 +498,6 @@ async def _stream_answer(
         "verification": verification,
         "session_id": session_id,
     }
-    yield f"data: {json.dumps(done_event)}\n\n"
 
 
 def _provider_label(generator: Any) -> str:
@@ -792,6 +812,46 @@ def search_documents(req: SearchRequest) -> Dict[str, Any]:
     }
 
 
+def _history_and_chunks(
+    assistant: Any,
+    query: str,
+    session_id: Optional[str],
+    mode: str,
+    top_k: int,
+    top_n: int,
+    augment: bool,
+    augment_mode: str,
+) -> tuple[List[Dict[str, str]], List[Dict[str, Any]]]:
+    """Load chat history, condense a follow-up question, and retrieve chunks (blocking I/O)."""
+    from src.memory.session_store import get_session_store
+
+    history = get_session_store().get_recent_history(session_id, turns=4) if session_id else []
+
+    search_query = query.strip()
+    augmenter = getattr(assistant, "augmenter", None) or getattr(assistant.retriever, "augmenter", None)
+    if history and augmenter and hasattr(augmenter, "condense_conversational_query"):
+        search_query = augmenter.condense_conversational_query(search_query, history=history)
+
+    chunks = _retrieve_for_mode(
+        assistant,
+        query=search_query,
+        mode=mode,
+        top_k=top_k,
+        top_n=top_n,
+        augment=augment,
+        augment_mode=augment_mode,
+    )
+    return history, chunks
+
+
+def _save_notice_turn(session_id: str, query: str, notice: str, mode: str) -> None:
+    from src.memory.session_store import get_session_store
+
+    store = get_session_store()
+    store.add_message(session_id, "user", query.strip())
+    store.add_message(session_id, "tutor", notice, grounding=mode if mode != "both" else "course")
+
+
 @app.get("/api/ask/stream")
 async def ask_stream(
     request: Request,
@@ -806,7 +866,7 @@ async def ask_stream(
     session_id: Optional[str] = Query(None, description="Optional chat session ID for multi-turn conversational memory"),
 ):
     """Server-Sent Events (SSE) token-by-token streaming endpoint for real-time typewriter UI."""
-    assistant = get_assistant()
+    assistant = await run_in_threadpool(get_assistant)
 
     async def event_generator():
         try:
@@ -819,21 +879,12 @@ async def ask_stream(
             if await request.is_disconnected():
                 return
 
-            # Fetch conversation history if session_id is provided
-            from src.memory.session_store import get_session_store
-            store = get_session_store()
-            history = store.get_recent_history(session_id, turns=4) if session_id else []
-
-            # Condense search query if history exists
-            search_query = query.strip()
-            augmenter = getattr(assistant, "augmenter", None) or getattr(assistant.retriever, "augmenter", None)
-            if history and augmenter and hasattr(augmenter, "condense_conversational_query"):
-                search_query = augmenter.condense_conversational_query(search_query, history=history)
-
             mode = _source_mode(source_mode, use_web, fallback_to_web)
-            chunks = _retrieve_for_mode(
+            history, chunks = await run_in_threadpool(
+                _history_and_chunks,
                 assistant,
-                query=search_query,
+                query=query,
+                session_id=session_id,
                 mode=mode,
                 top_k=top_k,
                 top_n=top_n,
@@ -844,8 +895,7 @@ async def ask_stream(
                 notice = _empty_retrieval_notice(mode)
                 yield f"data: {json.dumps({'type': 'token', 'token': notice})}\n\n"
                 if session_id:
-                    store.add_message(session_id, "user", query.strip())
-                    store.add_message(session_id, "tutor", notice, grounding=mode if mode != "both" else "course")
+                    await run_in_threadpool(_save_notice_turn, session_id, query, notice, mode)
                 yield f"data: {json.dumps({'type': 'done', 'answer': notice, 'sources': [], 'references': [], 'grounding': mode if mode != 'both' else 'course', 'session_id': session_id})}\n\n"
                 return
 
