@@ -85,6 +85,7 @@ class StudyAssistant:
         batch_size: int = 64,
         progress_callback: Optional[Callable[[int, int], None]] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        embedding_cache: Optional[Dict[str, List[float]]] = None,
     ) -> Dict[str, Any]:
         """Ingest a single document or an entire directory of course materials.
 
@@ -93,6 +94,7 @@ class StudyAssistant:
             batch_size: Embedding batch size.
             progress_callback: Optional callback reporting (processed_chunks, total_chunks).
             metadata: Optional fields stamped on every chunk of a single file (e.g. its workspace).
+            embedding_cache: Optional precomputed vectors by chunk text (see IngestionPipeline.ingest_file).
 
         Returns:
             Dictionary detailing ingestion summary.
@@ -116,6 +118,8 @@ class StudyAssistant:
                 kwargs["progress_callback"] = progress_callback
             if metadata:
                 kwargs["extra_metadata"] = metadata
+            if embedding_cache:
+                kwargs["embedding_cache"] = embedding_cache
             return self.pipeline.ingest_file(target, **kwargs)
 
     def search(

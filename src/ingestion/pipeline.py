@@ -11,6 +11,11 @@ from src.ingestion.indexer import ChromaIndexer
 from src.ingestion.loader import DocumentLoader
 
 
+def text_key(text: str) -> str:
+    """Stable key for a chunk's text in a precomputed embedding file."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 class DocumentChunker:
     """Configurable wrapper around chunk_documents."""
 
@@ -59,6 +64,7 @@ class IngestionPipeline:
         chunk_overlap: Optional[int] = None,
         progress_callback: Optional[Callable[[int, int], None]] = None,
         extra_metadata: Optional[Dict[str, Any]] = None,
+        embedding_cache: Optional[Dict[str, List[float]]] = None,
     ) -> Dict[str, Any]:
         """Ingest a single document into the vector database.
 
@@ -69,6 +75,8 @@ class IngestionPipeline:
         5. Embeds and upserts in safe batch sizes.
 
         `extra_metadata` is stamped on every chunk (the public demo uses it for the owning workspace).
+        `embedding_cache` maps `text_key(chunk text)` to a vector computed earlier with the same model;
+        a batch whose texts are all in it is indexed without calling the embedding API.
         """
         path = Path(file_path).resolve()
         raw_docs = self.loader.load(path)
@@ -117,8 +125,11 @@ class IngestionPipeline:
         for i in range(0, total_chunks, self.batch_size):
             batch = chunks[i : i + self.batch_size]
             texts = [c.page_content for c in batch]
+            cached = [embedding_cache.get(text_key(t)) for t in texts] if embedding_cache else []
 
-            if hasattr(self.embedder, "embed_batch"):
+            if cached and all(vector is not None for vector in cached):
+                embeddings = cached
+            elif hasattr(self.embedder, "embed_batch"):
                 embeddings = self.embedder.embed_batch(
                     texts,
                     input_type="passage",

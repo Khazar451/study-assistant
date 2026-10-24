@@ -23,6 +23,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, ge
 from src.assistant import StudyAssistant
 from src.generation.plots import embed_plots, ensure_requested_plot
 from src.ingestion.page_images import attach_page_images, render_pdf_page
+from src.ingestion.sample_index import SAMPLE_PATH, load_embedding_cache
 from src.generation.tutor_format import allowed_source_keys, bind_numbered_citations, infer_grounding, polish_tutor_answer
 from src import providers
 from src.providers import PROVIDER_LABELS
@@ -476,6 +477,9 @@ def get_status() -> Dict[str, Any]:
         "tavily_configured": bool(os.getenv("TAVILY_API_KEY")),
         "tavily_available": tavily_available,
         "indexed_chunks": chunk_count,
+        # Whether the bundled sample can be searched, and why startup indexing failed if it cannot.
+        "sample_ready": _is_indexed(assistant, SAMPLE_PATH.resolve()),
+        "sample_error": _sample_state["error"],
         "persist_directory": assistant.persist_directory,
         "generation_model": _str_attr(generator, "model"),
         "augment_model": _str_attr(augmenter, "model"),
@@ -915,7 +919,7 @@ def list_ingestion_jobs(workspace: Optional[str] = Depends(current_workspace)) -
 @app.post("/api/ingest/sample")
 def ingest_sample() -> Dict[str, Any]:
     """Ingest the bundled Kepler Astronomy sample material for instant testing."""
-    sample_path = Path("./sample_materials/astronomy_kepler.txt").resolve()
+    sample_path = SAMPLE_PATH.resolve()
     if not sample_path.exists():
         raise HTTPException(status_code=404, detail="Sample material file not found.")
 
@@ -928,8 +932,14 @@ def ingest_sample() -> Dict[str, Any]:
             "result": {"source": sample_path.name, "status": "already_indexed"},
             "total_indexed_chunks": assistant.count(),
         }
+    # Precomputed vectors let a fresh deployment index the sample without calling the embedding API.
+    cache = load_embedding_cache(sample_path, _str_attr(getattr(assistant, "embedder", None), "model") or None)
     try:
-        result = assistant.ingest(sample_path, metadata={"workspace": SHARED_WORKSPACE})
+        result = assistant.ingest(
+            sample_path,
+            metadata={"workspace": SHARED_WORKSPACE},
+            **({"embedding_cache": cache} if cache else {}),
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {exc}") from exc
     return {
@@ -1330,6 +1340,9 @@ def delete_chat_session(session_id: str, workspace: Optional[str] = Depends(curr
 _FRONTEND_DIR = Path(os.getenv("FRONTEND_DIR", "./frontend/out"))
 
 
+_sample_state: Dict[str, Optional[str]] = {"error": None}
+
+
 @app.on_event("startup")
 def _auto_ingest_sample() -> None:
     if os.getenv("AUTO_INGEST_SAMPLE", "false").strip().lower() not in {"1", "true", "yes"}:
@@ -1337,14 +1350,16 @@ def _auto_ingest_sample() -> None:
 
     def worker() -> None:
         log = logging.getLogger(__name__)
-        for attempt in range(1, 4):  # the hosted embedding API stalls now and then; retry
+        for attempt in range(1, 4):  # without the precomputed index this calls the embedding API, which stalls now and then
             try:
-                if get_assistant().count() == 0:
-                    ingest_sample()
+                ingest_sample()  # a no-op when the sample is already indexed
+                _sample_state["error"] = None
                 return
             except Exception as exc:  # best effort: the demo still works without the sample
+                _sample_state["error"] = str(getattr(exc, "detail", exc))
                 log.warning("Sample auto-ingest attempt %d failed: %s", attempt, exc)
                 time.sleep(5 * attempt)
+        log.error("Sample auto-ingest gave up; the library starts empty: %s", _sample_state["error"])
 
     threading.Thread(target=worker, name="auto-ingest-sample", daemon=True).start()
 
