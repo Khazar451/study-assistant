@@ -171,21 +171,6 @@ def require_admin(x_admin_token: Optional[str] = Header(None)) -> None:
         raise HTTPException(status_code=403, detail="Disabled in the public demo.")
 
 
-# TEMPORARY: shows how the hosting proxy forwards client addresses so TRUSTED_PROXY_HOPS can be
-# set from evidence. Admin-only; remove once the value is chosen.
-@app.get("/api/debug/client-ip", dependencies=[Depends(require_admin)])
-def debug_client_ip(request: Request) -> Dict[str, Any]:
-    headers = {
-        name: request.headers.get(name)
-        for name in ("x-forwarded-for", "x-real-ip", "true-client-ip", "cf-connecting-ip", "forwarded")
-    }
-    return {
-        "peer": request.client.host if request.client else None,
-        "headers": headers,
-        "trusted_proxy_hops": _env_int("TRUSTED_PROXY_HOPS"),
-        "rate_limit_key": _client_key(request),
-    }
-
 
 # --- Prometheus Metrics Definitions ---
 HTTP_REQUESTS_TOTAL = Counter(
