@@ -58,6 +58,7 @@ class IngestionPipeline:
         chunk_size: Optional[int] = None,
         chunk_overlap: Optional[int] = None,
         progress_callback: Optional[Callable[[int, int], None]] = None,
+        extra_metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Ingest a single document into the vector database.
 
@@ -66,6 +67,8 @@ class IngestionPipeline:
         3. Deletes any pre-existing chunks for this file to eliminate ghost chunks.
         4. Assigns deterministic chunk IDs.
         5. Embeds and upserts in safe batch sizes.
+
+        `extra_metadata` is stamped on every chunk (the public demo uses it for the owning workspace).
         """
         path = Path(file_path).resolve()
         raw_docs = self.loader.load(path)
@@ -104,6 +107,8 @@ class IngestionPipeline:
         for idx, chunk in enumerate(chunks):
             chunk.metadata["chunk_index"] = idx
             chunk.metadata["chunk_id"] = self._generate_chunk_id(str(path), idx)
+            if extra_metadata:
+                chunk.metadata.update(extra_metadata)
             # Remove any keys with None value for ChromaDB compliance
             chunk.metadata = {k: v for k, v in chunk.metadata.items() if v is not None}
 

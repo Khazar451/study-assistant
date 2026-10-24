@@ -22,7 +22,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, ge
 
 from src.assistant import StudyAssistant
 from src.generation.plots import embed_plots, ensure_requested_plot
-from src.ingestion.page_images import attach_page_images, is_library_file, render_pdf_page
+from src.ingestion.page_images import attach_page_images, render_pdf_page
 from src.generation.tutor_format import allowed_source_keys, bind_numbered_citations, infer_grounding, polish_tutor_answer
 from src import providers
 from src.providers import PROVIDER_LABELS
@@ -511,6 +511,7 @@ def _retrieve_for_mode(
     top_n: int,
     augment: bool,
     augment_mode: str,
+    workspace: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     tavily = getattr(assistant, "tavily", None)
     web_ok = bool(tavily and getattr(tavily, "is_available", False))
@@ -530,8 +531,15 @@ def _retrieve_for_mode(
         augment=augment,
         augment_mode=augment_mode,
         use_web=mode == "both" and web_ok,
+        **_where_kwargs(workspace),
     )
     return chunks
+
+
+def _where_kwargs(workspace: Optional[str]) -> Dict[str, Any]:
+    """`where=` for assistant calls when the caller is limited to a workspace; nothing otherwise."""
+    where = _workspace_filter(workspace)
+    return {"where": where} if where else {}
 
 
 def _empty_retrieval_notice(mode: str) -> str:
@@ -640,12 +648,13 @@ def _provider_label(generator: Any) -> str:
 
 
 @app.get("/api/documents")
-def get_documents() -> Dict[str, Any]:
-    """Inspect all documents indexed in the persistent ChromaDB collection."""
+def get_documents(workspace: Optional[str] = Depends(current_workspace)) -> Dict[str, Any]:
+    """Inspect the documents the caller can use (their own uploads and the shared sample)."""
     assistant = get_assistant()
     try:
         # ChromaDB collection inspection
-        raw = assistant.indexer.collection.get(include=["metadatas"])
+        where = _workspace_filter(workspace)
+        raw = assistant.indexer.collection.get(include=["metadatas"], **({"where": where} if where else {}))
         metadatas = raw.get("metadatas", []) or []
 
         doc_map: Dict[str, Dict[str, Any]] = {}
@@ -696,14 +705,51 @@ def get_documents() -> Dict[str, Any]:
         }
 
 
+# --- Visitor workspaces: whose documents, files and jobs a caller may use ---
+# The bundled sample is indexed into this workspace so every visitor can read it.
+SHARED_WORKSPACE = "shared"
+
+
+def _workspace_filter(workspace: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Chroma filter for the caller's chunks plus the shared sample; None = no limit (local development)."""
+    if workspace is None:
+        return None
+    return {"workspace": {"$in": [workspace, SHARED_WORKSPACE]}}
+
+
+def _upload_dir(workspace: Optional[str]) -> Path:
+    # Workspace IDs are 32 hex characters (checked when the cookie is read), so they are safe as a folder name.
+    root = Path("./data/uploads").resolve()
+    return root / workspace if workspace else root
+
+
+def _in_library(path: Path, workspace: Optional[str]) -> bool:
+    """True for files in the caller's upload folder or the bundled samples."""
+    target = path.resolve()
+    roots = [_upload_dir(workspace), Path("./sample_materials").resolve()]
+    return target.is_file() and any(target == root or root in target.parents for root in roots)
+
+
+def _ingest_kwargs(assistant: Any, workspace: Optional[str], progress_callback: Optional[Any] = None) -> Dict[str, Any]:
+    import inspect
+
+    kwargs: Dict[str, Any] = {}
+    if progress_callback is not None and "progress_callback" in inspect.signature(assistant.ingest).parameters:
+        kwargs["progress_callback"] = progress_callback
+    if workspace is not None:
+        kwargs["metadata"] = {"workspace": workspace}
+    return kwargs
+
+
 # Ingestion Job Tracker
 ingestion_jobs: Dict[str, Dict[str, Any]] = {}
+_job_workspace: Dict[str, Optional[str]] = {}
 _ingest_lock = threading.Lock()
 _log = logging.getLogger("study.ingest")
 MAX_UPLOAD_BYTES = int(float(os.getenv("MAX_UPLOAD_MB", "200")) * 1024 * 1024)
 
 
-def _run_ingestion_worker(job_id: str, target_path: Path, filename: str) -> None:
+def _run_ingestion_worker(job_id: str, target_path: Path, filename: str, workspace: Optional[str] = None) -> None:
     """Index one book at a time so ChromaDB is not written by two uploads at once."""
     assistant = get_assistant()
     try:
@@ -716,12 +762,7 @@ def _run_ingestion_worker(job_id: str, target_path: Path, filename: str) -> None
                     ingestion_jobs[job_id]["updated_at"] = time.time()
 
             if hasattr(assistant, "ingest"):
-                import inspect
-                sig = inspect.signature(assistant.ingest)
-                if "progress_callback" in sig.parameters:
-                    result = assistant.ingest(target_path, progress_callback=on_progress)
-                else:
-                    result = assistant.ingest(target_path)
+                result = assistant.ingest(target_path, **_ingest_kwargs(assistant, workspace, on_progress))
             else:
                 result = {"status": "success", "file": filename}
 
@@ -772,6 +813,7 @@ async def ingest_file(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     background: bool = Query(False),
+    workspace: Optional[str] = Depends(current_workspace),
 ) -> Dict[str, Any]:
     """Upload and ingest a course file (PDF, TXT, MD, PNG, JPG, JPEG) into the vector store.
 
@@ -788,13 +830,14 @@ async def ingest_file(
             detail=f"Unsupported file format '{ext}'. Supported formats: {', '.join(sorted(allowed_exts))}",
         )
 
-    upload_dir = Path("./data/uploads").resolve()
+    upload_dir = _upload_dir(workspace)
     upload_dir.mkdir(parents=True, exist_ok=True)
     safe_name = Path(filename).name
     target_path = upload_dir / safe_name
     await _save_upload(file, target_path)
 
     job_id = str(uuid.uuid4())
+    _job_workspace[job_id] = workspace
     ingestion_jobs[job_id] = {
         "job_id": job_id,
         "filename": safe_name,
@@ -813,7 +856,7 @@ async def ingest_file(
     if background:
         threading.Thread(
             target=_run_ingestion_worker,
-            args=(job_id, target_path, safe_name),
+            args=(job_id, target_path, safe_name, workspace),
             name=f"ingest-{job_id[:8]}",
             daemon=True,
         ).start()
@@ -833,12 +876,9 @@ async def ingest_file(
                 ingestion_jobs[job_id]["progress"] = int((processed / total) * 100) if total > 0 else 0
                 ingestion_jobs[job_id]["updated_at"] = time.time()
 
-        import inspect
-        sig = inspect.signature(assistant.ingest)
-        if "progress_callback" in sig.parameters:
-            result = await run_in_threadpool(assistant.ingest, target_path, progress_callback=on_progress)
-        else:
-            result = await run_in_threadpool(assistant.ingest, target_path)
+        result = await run_in_threadpool(
+            assistant.ingest, target_path, **_ingest_kwargs(assistant, workspace, on_progress)
+        )
 
         ingestion_jobs[job_id]["status"] = "completed"
         ingestion_jobs[job_id]["progress"] = 100
@@ -858,17 +898,18 @@ async def ingest_file(
 
 
 @app.get("/api/ingest/status/{job_id}")
-def get_ingestion_status(job_id: str) -> Dict[str, Any]:
+def get_ingestion_status(job_id: str, workspace: Optional[str] = Depends(current_workspace)) -> Dict[str, Any]:
     """Retrieve real-time progress and completion status for an ingestion job."""
-    if job_id not in ingestion_jobs:
+    if job_id not in ingestion_jobs or _job_workspace.get(job_id) != workspace:
         raise HTTPException(status_code=404, detail=f"Ingestion job '{job_id}' not found.")
     return ingestion_jobs[job_id]
 
 
 @app.get("/api/ingest/jobs")
-def list_ingestion_jobs() -> Dict[str, Any]:
-    """List recent ingestion jobs."""
-    return {"jobs": list(ingestion_jobs.values())[-25:]}
+def list_ingestion_jobs(workspace: Optional[str] = Depends(current_workspace)) -> Dict[str, Any]:
+    """List the caller's recent ingestion jobs."""
+    mine = [job for job_id, job in ingestion_jobs.items() if _job_workspace.get(job_id) == workspace]
+    return {"jobs": mine[-25:]}
 
 
 @app.post("/api/ingest/sample")
@@ -888,7 +929,7 @@ def ingest_sample() -> Dict[str, Any]:
             "total_indexed_chunks": assistant.count(),
         }
     try:
-        result = assistant.ingest(sample_path)
+        result = assistant.ingest(sample_path, metadata={"workspace": SHARED_WORKSPACE})
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {exc}") from exc
     return {
@@ -928,6 +969,7 @@ def ask_question(req: AskRequest, workspace: Optional[str] = Depends(current_wor
         use_web=req.use_web,
         fallback_to_web=req.fallback_to_web,
         session_id=req.session_id,
+        **_where_kwargs(workspace),
     )
 
     duration_ms = round((time.time() - start_time) * 1000, 1)
@@ -942,7 +984,7 @@ def ask_question(req: AskRequest, workspace: Optional[str] = Depends(current_wor
 
 
 @app.post("/api/search")
-def search_documents(req: SearchRequest) -> Dict[str, Any]:
+def search_documents(req: SearchRequest, workspace: Optional[str] = Depends(current_workspace)) -> Dict[str, Any]:
     """Retrieve and rerank candidate document chunks without LLM synthesis."""
     assistant = get_assistant()
     chunks = assistant.search(
@@ -952,6 +994,7 @@ def search_documents(req: SearchRequest) -> Dict[str, Any]:
         augment=req.augment,
         augment_mode=req.augment_mode,
         use_web=req.use_web,
+        **_where_kwargs(workspace),
     )
     return {
         "query": req.query,
@@ -969,6 +1012,7 @@ def _history_and_chunks(
     top_n: int,
     augment: bool,
     augment_mode: str,
+    workspace: Optional[str] = None,
 ) -> tuple[List[Dict[str, str]], List[Dict[str, Any]]]:
     """Load chat history, condense a follow-up question, and retrieve chunks (blocking I/O)."""
     from src.memory.session_store import get_session_store
@@ -988,6 +1032,7 @@ def _history_and_chunks(
         top_n=top_n,
         augment=augment,
         augment_mode=augment_mode,
+        workspace=workspace,
     )
     return history, chunks
 
@@ -1041,6 +1086,7 @@ async def ask_stream(
                 top_n=top_n,
                 augment=augment,
                 augment_mode=augment_mode,
+                workspace=workspace,
             )
             if not chunks:
                 notice = _empty_retrieval_notice(mode)
@@ -1090,12 +1136,13 @@ async def ask_stream(
 
 
 @app.get("/api/materials/file")
-def get_material_file(path: str = Query(..., description="Absolute path of an indexed course file")):
+def get_material_file(
+    path: str = Query(..., description="Absolute path of an indexed course file"),
+    workspace: Optional[str] = Depends(current_workspace),
+):
     """Serve a course file so a citation can open the PDF at a page."""
     target = Path(path).resolve()
-    roots = [Path("./data/uploads").resolve(), Path("./sample_materials").resolve()]
-    allowed = target.is_file() and any(target == root or root in target.parents for root in roots)
-    if not allowed:
+    if not _in_library(target, workspace):
         raise HTTPException(status_code=404, detail="File is not in the course library.")
     return FileResponse(target)
 
@@ -1104,10 +1151,11 @@ def get_material_file(path: str = Query(..., description="Absolute path of an in
 def get_material_page(
     path: str = Query(..., description="Absolute path of an indexed PDF"),
     page: int = Query(1, ge=1),
+    workspace: Optional[str] = Depends(current_workspace),
 ):
     """Return a JPEG of one cited book page."""
     target = Path(path)
-    if not is_library_file(target):
+    if not _in_library(target, workspace):
         raise HTTPException(status_code=404, detail="File is not in the course library.")
     image = render_pdf_page(str(target), page)
     if image is None:
@@ -1127,7 +1175,7 @@ def get_plot(name: str):
 
 
 @app.post("/api/flashcards")
-def generate_flashcards(req: FlashcardsRequest) -> Dict[str, Any]:
+def generate_flashcards(req: FlashcardsRequest, workspace: Optional[str] = Depends(current_workspace)) -> Dict[str, Any]:
     """Generate grounded active-recall flashcards from indexed course materials."""
     assistant = get_assistant()
     if assistant.count() == 0:
@@ -1137,7 +1185,7 @@ def generate_flashcards(req: FlashcardsRequest) -> Dict[str, Any]:
         )
 
     topic = req.topic or "core principles and key formulas"
-    chunks = assistant.search(query=topic, top_k=10, top_n=5)
+    chunks = assistant.search(query=topic, top_k=10, top_n=5, **_where_kwargs(workspace))
     context = assistant.retriever.format_context(chunks)
 
     # Prompt structured flashcards

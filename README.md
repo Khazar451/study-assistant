@@ -258,7 +258,7 @@ The API is open by default for local development. On a shared deployment set the
 | `TRUSTED_PROXY_HOPS=3` | How many proxies in front of the app append to `X-Forwarded-For`. The client address is read that many entries from the right, so a client cannot spoof it. `3` was measured on Render (Cloudflare, Render edge, Render load balancer); `0` (default) uses the connecting address, which is right for local development. |
 | `DEMO_MAX_PER_MIN=30`, `DEMO_MAX_PER_DAY=500` | Caps on the same endpoints across all visitors together; excess requests get `503` with `Retry-After`. `0` disables. |
 | `DEMO_PAUSED=true` | Those endpoints return `503` at once, to stop spending credits without a redeploy. |
-| `WORKSPACE_ISOLATION=true` | Each browser gets a private workspace (an `HttpOnly` cookie): visitors see and change only their own chats. Defaults to the value of `DEMO_MODE`, so local development keeps one shared history. |
+| `WORKSPACE_ISOLATION=true` | Each browser gets a private workspace (an `HttpOnly` cookie). Visitors see and change only their own chats; their uploads are stored under `data/uploads/<workspace>/`, searched only for them, and served only to them. The bundled sample is shared with everyone. Defaults to the value of `DEMO_MODE`, so local development keeps one shared library. |
 | `ULTRA_MAX_PER_HOUR=20` | At most this many Nemotron 3 Ultra calls per hour; after that, questions are answered by Super. `0` (default) means no cap. |
 | `MAX_UPLOAD_MB=50` | Upload size cap (default 200). |
 
