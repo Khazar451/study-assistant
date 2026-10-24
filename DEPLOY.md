@@ -32,6 +32,11 @@ Render fills in `PORT` itself; `app.py` reads it.
 ## What the demo container sets
 - `DEMO_MODE=true`: the "clear index" endpoint is disabled for visitors.
 - `RATE_LIMIT_PER_MIN=20` per visitor on the endpoints that spend credits. `MAX_UPLOAD_MB=50`.
+- `TRUSTED_PROXY_HOPS=3`: on Render, `X-Forwarded-For` arrives as `<anything the client sent>, <client>, <Cloudflare edge>, <Render load balancer>`
+  (measured Oct 24, 2026), so the visitor is the third entry from the right. On another host, measure its chain before
+  copying this value: a wrong count either lets clients spoof their address or puts all visitors in one bucket.
+- `DEMO_MAX_PER_MIN=30` and `DEMO_MAX_PER_DAY=500` across all visitors together; `ULTRA_MAX_PER_HOUR=20`.
+- To stop all model spending at once, set `DEMO_PAUSED=true` in the service's environment.
 - `AUTO_INGEST_SAMPLE=true`: indexes `sample_materials/astronomy_kepler.txt` so a judge can ask a question immediately.
 
 ## Other hosts

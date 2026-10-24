@@ -198,14 +198,17 @@ class StudyGenerator:
         if stream:
             kwargs["stream"] = True
         if self.reasoning_model and providers.needs_deep_reasoning(query):
-            try:
-                response = self.client.chat.completions.create(
-                    model=self.reasoning_model, max_tokens=max(self.max_tokens, 4000), **kwargs
-                )
-                self.last_model = self.reasoning_model
-                return response
-            except Exception as exc:  # model unavailable / rate limited: fall back to the answer model
-                logger.warning("Reasoning model %s failed (%s); using %s", self.reasoning_model, exc, self.model)
+            if not providers.reserve_reasoning_call():
+                logger.info("Hourly cap for %s reached; using %s", self.reasoning_model, self.model)
+            else:
+                try:
+                    response = self.client.chat.completions.create(
+                        model=self.reasoning_model, max_tokens=max(self.max_tokens, 4000), **kwargs
+                    )
+                    self.last_model = self.reasoning_model
+                    return response
+                except Exception as exc:  # model unavailable / rate limited: fall back to the answer model
+                    logger.warning("Reasoning model %s failed (%s); using %s", self.reasoning_model, exc, self.model)
         self.last_model = self.model
         return self.client.chat.completions.create(model=self.model, max_tokens=self.max_tokens, **kwargs)
 

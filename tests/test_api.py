@@ -338,3 +338,99 @@ def test_rate_limit_blocks_llm_endpoint(client, monkeypatch):
     assert statuses[:2] == [200, 200]
     assert statuses[2] == 429
     server._rate_hits.clear()
+
+
+@pytest.fixture
+def fresh_limits(monkeypatch):
+    """Empty limiter state and no limit settings, restored after the test."""
+    from src.api import server
+
+    for name in ("RATE_LIMIT_PER_MIN", "TRUSTED_PROXY_HOPS", "DEMO_MAX_PER_MIN", "DEMO_MAX_PER_DAY", "DEMO_PAUSED"):
+        monkeypatch.delenv(name, raising=False)
+    server._rate_hits.clear()
+    server._global_hits.clear()
+    yield server
+    server._rate_hits.clear()
+    server._global_hits.clear()
+
+
+def test_rate_limit_ignores_spoofed_forwarded_for(client, fresh_limits, monkeypatch):
+    # The proxy appends the real address last; whatever the client sent comes before it.
+    monkeypatch.setenv("RATE_LIMIT_PER_MIN", "2")
+    monkeypatch.setenv("TRUSTED_PROXY_HOPS", "1")
+    statuses = [
+        client.post(
+            "/api/search", json={"query": "orbits"}, headers={"X-Forwarded-For": f"10.0.0.{i}, 203.0.113.7"}
+        ).status_code
+        for i in range(3)
+    ]
+    assert statuses == [200, 200, 429]
+
+
+def test_rate_limit_table_stays_bounded(client, fresh_limits, monkeypatch):
+    monkeypatch.setenv("RATE_LIMIT_PER_MIN", "5")
+    monkeypatch.setenv("TRUSTED_PROXY_HOPS", "1")
+    monkeypatch.setattr(fresh_limits, "_MAX_RATE_KEYS", 10)
+    for i in range(40):
+        client.post("/api/search", json={"query": "orbits"}, headers={"X-Forwarded-For": f"198.51.100.{i}"})
+    assert len(fresh_limits._rate_hits) <= 10
+
+
+def test_global_daily_cap_returns_503(client, fresh_limits, monkeypatch):
+    monkeypatch.setenv("DEMO_MAX_PER_DAY", "2")
+    responses = [
+        client.post("/api/search", json={"query": "orbits"}, headers={"X-Forwarded-For": f"198.51.100.{i}"})
+        for i in range(3)
+    ]
+    assert [r.status_code for r in responses] == [200, 200, 503]
+    assert "daily question limit" in responses[2].json()["detail"]
+    assert int(responses[2].headers["Retry-After"]) > 0
+
+
+def test_global_minute_cap_returns_503(client, fresh_limits, monkeypatch):
+    monkeypatch.setenv("DEMO_MAX_PER_MIN", "1")
+    assert client.post("/api/search", json={"query": "orbits"}).status_code == 200
+    busy = client.post("/api/search", json={"query": "orbits"})
+    assert busy.status_code == 503
+    assert "busy" in busy.json()["detail"]
+
+
+def test_refused_requests_do_not_spend_the_global_budget(client, fresh_limits, monkeypatch):
+    monkeypatch.setenv("RATE_LIMIT_PER_MIN", "1")
+    monkeypatch.setenv("DEMO_MAX_PER_DAY", "5")
+    for _ in range(4):
+        client.post("/api/search", json={"query": "orbits"})
+    assert len(fresh_limits._global_hits) == 1
+
+
+def test_demo_paused_blocks_spend_endpoints_only(client, fresh_limits, monkeypatch):
+    monkeypatch.setenv("DEMO_PAUSED", "true")
+    paused = client.post("/api/ask", json={"query": "orbits"})
+    assert paused.status_code == 503
+    assert "paused" in paused.json()["detail"]
+    assert client.get("/api/status").status_code == 200
+
+
+def test_sample_ingest_is_rate_limited(client, fresh_limits, monkeypatch):
+    monkeypatch.setenv("RATE_LIMIT_PER_MIN", "1")
+    assert client.post("/api/ingest/sample").status_code == 200
+    assert client.post("/api/ingest/sample").status_code == 429
+
+
+def test_sample_ingest_skips_when_already_indexed(client, mock_assistant):
+    mock_assistant.indexer.collection.get.return_value = {"ids": ["sample_0"]}
+    res = client.post("/api/ingest/sample")
+    assert res.status_code == 200
+    assert res.json()["result"]["status"] == "already_indexed"
+    mock_assistant.ingest.assert_not_called()
+
+
+def test_oversized_question_is_rejected(client, mock_assistant, fresh_limits):
+    from src.api.server import MAX_QUERY_CHARS
+
+    too_long = "x" * (MAX_QUERY_CHARS + 1)
+    assert client.post("/api/ask", json={"query": too_long}).status_code == 422
+    assert client.post("/api/search", json={"query": too_long}).status_code == 422
+    assert client.get("/api/ask/stream", params={"query": too_long}).status_code == 422
+    mock_assistant.ask.assert_not_called()
+    assert client.post("/api/ask", json={"query": "x" * MAX_QUERY_CHARS}).status_code == 200

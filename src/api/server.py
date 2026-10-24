@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 import hmac
 import json
 import logging
@@ -8,7 +9,7 @@ from pathlib import Path
 import re
 import threading
 import time
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Deque, Dict, Iterator, List, Optional
 import uuid
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, Query, Request, Response, UploadFile
@@ -41,6 +42,9 @@ app = FastAPI(
 # DEMO_MODE=true: the public demo cannot wipe the shared index unless ADMIN_TOKEN matches.
 # ADMIN_TOKEN: when set, destructive endpoints require the X-Admin-Token header.
 # RATE_LIMIT_PER_MIN: per-client cap on the endpoints that spend LLM credits (0 disables).
+# TRUSTED_PROXY_HOPS: proxies in front of the app that append to X-Forwarded-For (0 = use the socket peer).
+# DEMO_MAX_PER_MIN / DEMO_MAX_PER_DAY: caps on those endpoints across all visitors together (0 disables).
+# DEMO_PAUSED=true: those endpoints return 503, so credits stop being spent at once.
 # MAX_UPLOAD_MB: upload size cap (default 200).
 _cors_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",") if o.strip()] or ["*"]
 app.add_middleware(
@@ -51,47 +55,109 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-_RATE_LIMITED_PATHS = {"/api/ask", "/api/ask/stream", "/api/search", "/api/flashcards", "/api/ingest/file"}
+_RATE_LIMITED_PATHS = {
+    "/api/ask",
+    "/api/ask/stream",
+    "/api/search",
+    "/api/flashcards",
+    "/api/ingest/file",
+    "/api/ingest/sample",
+}
+_MAX_RATE_KEYS = 10_000
 _rate_hits: Dict[str, List[float]] = {}
+_global_hits: Deque[float] = deque()
 _rate_lock = threading.Lock()
 
 
+def _env_flag(name: str) -> bool:
+    return os.getenv(name, "false").strip().lower() in {"1", "true", "yes"}
+
+
+def _env_int(name: str, default: int = 0) -> int:
+    try:
+        return max(0, int(os.getenv(name, str(default))))
+    except ValueError:
+        return default
+
+
 def _demo_mode() -> bool:
-    return os.getenv("DEMO_MODE", "false").strip().lower() in {"1", "true", "yes"}
+    return _env_flag("DEMO_MODE")
 
 
 def _rate_limit_per_min() -> int:
-    try:
-        return max(0, int(os.getenv("RATE_LIMIT_PER_MIN", "0")))
-    except ValueError:
-        return 0
+    return _env_int("RATE_LIMIT_PER_MIN")
 
 
 def _client_key(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for", "")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+    """Client address for rate limiting.
+
+    Only entries appended by our own proxies are trusted, counted from the right end of
+    X-Forwarded-For; anything a client sends in that header sits further left and is ignored.
+    """
+    peer = request.client.host if request.client else "unknown"
+    hops = _env_int("TRUSTED_PROXY_HOPS")
+    if hops:
+        forwarded = [part.strip() for part in request.headers.get("x-forwarded-for", "").split(",") if part.strip()]
+        if len(forwarded) >= hops:
+            return forwarded[-hops]
+    return peer
+
+
+def _refusal(status_code: int, detail: str, retry_after: float) -> JSONResponse:
+    retry = max(1, int(retry_after) + 1)
+    return JSONResponse(status_code=status_code, content={"detail": detail}, headers={"Retry-After": str(retry)})
+
+
+def _prune_rate_keys(now: float) -> None:
+    """Keep the per-client table bounded even when callers rotate addresses."""
+    for key in [k for k, hits in _rate_hits.items() if not hits or now - hits[-1] >= 60]:
+        del _rate_hits[key]
+    if len(_rate_hits) > _MAX_RATE_KEYS:
+        by_last_hit = sorted(_rate_hits, key=lambda k: _rate_hits[k][-1])
+        for key in by_last_hit[: len(_rate_hits) - _MAX_RATE_KEYS]:
+            del _rate_hits[key]
+
+
+def _check_spend_limits(key: str, now: float) -> Optional[JSONResponse]:
+    """Apply the per-client and the global caps; a refused request does not count against either."""
+    per_client = _rate_limit_per_min()
+    per_min = _env_int("DEMO_MAX_PER_MIN")
+    per_day = _env_int("DEMO_MAX_PER_DAY")
+    with _rate_lock:
+        hits = [t for t in _rate_hits.get(key, []) if now - t < 60]
+        if per_client and len(hits) >= per_client:
+            _rate_hits[key] = hits
+            wait = 60 - (now - hits[0])
+            return _refusal(429, f"Rate limit reached ({per_client}/min). Try again in {int(wait) + 1}s.", wait)
+
+        while _global_hits and now - _global_hits[0] >= 86_400:
+            _global_hits.popleft()
+        if per_day and len(_global_hits) >= per_day:
+            wait = 86_400 - (now - _global_hits[0])
+            return _refusal(503, f"The demo reached its daily question limit. It reopens in about {int(wait // 3600) + 1} h.", wait)
+        last_minute = [t for t in _global_hits if now - t < 60]
+        if per_min and len(last_minute) >= per_min:
+            wait = 60 - (now - last_minute[0])
+            return _refusal(503, f"The demo is busy right now. Try again in {int(wait) + 1}s.", wait)
+
+        if per_client:
+            hits.append(now)
+            _rate_hits[key] = hits
+            if len(_rate_hits) > _MAX_RATE_KEYS:
+                _prune_rate_keys(now)
+        if per_min or per_day:
+            _global_hits.append(now)
+    return None
 
 
 @app.middleware("http")
 async def rate_limit_llm_endpoints(request: Request, call_next):
-    limit = _rate_limit_per_min()
-    if limit and request.url.path in _RATE_LIMITED_PATHS and request.method != "OPTIONS":
-        now = time.time()
-        key = _client_key(request)
-        with _rate_lock:
-            hits = [t for t in _rate_hits.get(key, []) if now - t < 60]
-            if len(hits) >= limit:
-                _rate_hits[key] = hits
-                retry = int(60 - (now - hits[0])) + 1
-                return JSONResponse(
-                    status_code=429,
-                    content={"detail": f"Rate limit reached ({limit}/min). Try again in {retry}s."},
-                    headers={"Retry-After": str(retry)},
-                )
-            hits.append(now)
-            _rate_hits[key] = hits
+    if request.url.path in _RATE_LIMITED_PATHS and request.method != "OPTIONS":
+        if _env_flag("DEMO_PAUSED"):
+            return JSONResponse(status_code=503, content={"detail": "The demo is paused right now. Please try again later."})
+        refusal = _check_spend_limits(_client_key(request), time.time())
+        if refusal is not None:
+            return refusal
     return await call_next(request)
 
 
@@ -103,6 +169,7 @@ def require_admin(x_admin_token: Optional[str] = Header(None)) -> None:
             raise HTTPException(status_code=403, detail="Admin token required.")
     elif _demo_mode():
         raise HTTPException(status_code=403, detail="Disabled in the public demo.")
+
 
 
 # --- Prometheus Metrics Definitions ---
@@ -257,9 +324,12 @@ def set_assistant(assistant: StudyAssistant) -> None:
 
 # --- Pydantic Request / Response Models ---
 
+# Questions reach several paid model calls, so their size is capped (the UI enforces the same limit).
+MAX_QUERY_CHARS = 2000
+
 
 class AskRequest(BaseModel):
-    query: str = Field(..., description="Student's academic question")
+    query: str = Field(..., max_length=MAX_QUERY_CHARS, description="Student's academic question")
     top_k: int = Field(15, ge=1, le=50, description="Initial vector candidates")
     top_n: int = Field(5, ge=1, le=20, description="Reranked context chunks")
     augment: bool = Field(True, description="Enable query intelligence (rewrite/expand/HyDE)")
@@ -273,7 +343,7 @@ class AskRequest(BaseModel):
 
 
 class CreateSessionRequest(BaseModel):
-    title: Optional[str] = Field("New Chat", description="Title of the conversation session")
+    title: Optional[str] = Field("New Chat", max_length=120, description="Title of the conversation session")
     session_id: Optional[str] = Field(None, description="Optional custom session ID")
 
 
@@ -282,7 +352,7 @@ class RenameSessionRequest(BaseModel):
 
 
 class SearchRequest(BaseModel):
-    query: str = Field(..., description="Search query")
+    query: str = Field(..., max_length=MAX_QUERY_CHARS, description="Search query")
     top_k: int = Field(15, ge=1, le=50)
     top_n: int = Field(5, ge=1, le=20)
     augment: bool = Field(True)
@@ -305,7 +375,7 @@ class FlashcardItem(BaseModel):
 
 
 class FlashcardsRequest(BaseModel):
-    topic: Optional[str] = Field(None, description="Optional focus topic")
+    topic: Optional[str] = Field(None, max_length=200, description="Optional focus topic")
     count: int = Field(4, ge=1, le=10, description="Number of flashcards to generate")
 
 
@@ -748,6 +818,14 @@ def ingest_sample() -> Dict[str, Any]:
         raise HTTPException(status_code=404, detail="Sample material file not found.")
 
     assistant = get_assistant()
+    if _is_indexed(assistant, sample_path):
+        # Already in the library: re-embedding it would only spend credits.
+        return {
+            "success": True,
+            "material": "Kepler's Laws of Planetary Motion",
+            "result": {"source": sample_path.name, "status": "already_indexed"},
+            "total_indexed_chunks": assistant.count(),
+        }
     try:
         result = assistant.ingest(sample_path)
     except Exception as exc:
@@ -758,6 +836,14 @@ def ingest_sample() -> Dict[str, Any]:
         "result": result,
         "total_indexed_chunks": assistant.count(),
     }
+
+
+def _is_indexed(assistant: Any, path: Path) -> bool:
+    try:
+        found = assistant.indexer.collection.get(where={"file_path": str(path)}, limit=1)
+    except Exception:
+        return False
+    return bool(isinstance(found, dict) and found.get("ids"))
 
 
 @app.post("/api/ask")
@@ -855,7 +941,7 @@ def _save_notice_turn(session_id: str, query: str, notice: str, mode: str) -> No
 @app.get("/api/ask/stream")
 async def ask_stream(
     request: Request,
-    query: str = Query(..., description="Student question"),
+    query: str = Query(..., max_length=MAX_QUERY_CHARS, description="Student question"),
     top_k: int = Query(15, ge=1, le=50),
     top_n: int = Query(5, ge=1, le=20),
     augment: bool = Query(True),
