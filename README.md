@@ -8,7 +8,7 @@
 [![Nebius Token Factory](https://img.shields.io/badge/Nebius-Token%20Factory-00F5D4.svg)](https://tokenfactory.nebius.com/)
 [![Global AI Hackathon](https://img.shields.io/badge/Nebius%20x%20NVIDIA-Global%20AI%20Hackathon-76B900.svg?logo=nvidia&logoColor=white)](https://github.com/Khazar451/study-assistant)
 [![Vector DB](https://img.shields.io/badge/ChromaDB-Persistent%20HNSW-FF6B6B.svg)](https://www.trychroma.com/)
-[![Tests: 207 Passing](https://img.shields.io/badge/tests-207%20passing-brightgreen.svg)](tests/)
+[![Tests: 210](https://img.shields.io/badge/tests-210-brightgreen.svg)](tests/)
 [![CI Status](https://github.com/Khazar451/study-assistant/actions/workflows/test.yml/badge.svg)](https://github.com/Khazar451/study-assistant/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -25,8 +25,9 @@
 - **5-minute run:** copy `.env.example` to `.env.local`, set `NEBIUS_API_KEY`, `NVIDIA_API_KEY`, and `TAVILY_API_KEY`, then `bin/study-assistant`. Open the printed frontend URL. Under **Notes**, load a PDF (up to 200 MB). Ask a question with the source switch on **Notes**, **Web**, or **Both**. A cited page is drawn under the answer. Ask for a plot and a comparison and the reply includes a rendered graph and a markdown table.
 - **What makes it different:** math in answers is **checked with SymPy** and shown with a "verified" card (the model is not just trusted); every citation renders the **actual source page**; the student chooses **Notes / Web / Both** so grounding is explicit; chat history persists across sessions.
 - **Built during the submission window (opened 26 Aug 2026):** this repository's first commit is 17 Sep 2026, so the whole project is new work. Grounded RAG tutor, Token Factory Nemotron routing (Super, Nano, Ultra), Tavily academic search, numbered citations, KaTeX formulas, SymPy verification, cited-page images, 2D/3D plots, persistent chat memory, PPTX and slide-image ingestion, flashcards, Next.js + FastAPI UI, tests and CI.
+- **How Token Factory helped:** the stock `openai` client works against Token Factory with only a base URL and key change, so moving from NVIDIA NIM touched one function (`src/providers.py`). One key serves Nano, Super and Ultra, which is what lets the app route each pipeline stage to a different Nemotron size.
 - **Feedback on Nebius and NVIDIA tooling:** see [FEEDBACK.md](FEEDBACK.md).
-- **Benchmark table** later in this README is from `python -m evaluation.benchmark --mock` (offline, no live API).
+- **Benchmark table** later in this README comes from `python -m evaluation.benchmark --mock`, which returns fixed values for CI. It is not a quality measurement (see section 3.7).
 
 ---
 
@@ -34,13 +35,13 @@
 - [1. Executive Summary & Problem Statement](#1-executive-summary--problem-statement)
 - [2. System Architecture](#2-system-architecture)
 - [3. What We Have Built So Far (Current Implementation)](#3-what-we-have-built-so-far-current-implementation)
-  - [3.1 Ingestion & Indexing Engine](#31-ingestion--indexing-engine)
-  - [3.2 Advanced Retrieval & Query Intelligence](#32-advanced-retrieval--query-intelligence)
-  - [3.3 Grounded Generation Engine & Guardrails](#33-grounded-generation-engine--guardrails)
-  - [3.4 Unified Assistant Orchestrator & CLI](#34-unified-assistant-orchestrator--cli)
-  - [3.5 Automated Testing & CI/CD Pipeline](#35-automated-testing--cicd-pipeline)
-  - [3.6 Modern Web Application & REST API Layer](#36-modern-web-application--rest-api-layer)
-  - [3.7 Quantitative Academic Evaluation & Benchmark Suite](#37-quantitative-academic-evaluation--benchmark-suite)
+  - [3.1 Ingestion & Indexing Engine](#31-ingestion--indexing-engine-srcingestion)
+  - [3.2 Advanced Retrieval & Query Intelligence](#32-advanced-retrieval--query-intelligence-srcretrieval)
+  - [3.3 Grounded Generation Engine & Guardrails](#33-grounded-generation-engine--guardrails-srcgeneration)
+  - [3.4 Unified Assistant Orchestrator & CLI](#34-unified-assistant-orchestrator--cli-srcassistantpy)
+  - [3.5 Automated Testing & CI/CD Pipeline](#35-automated-testing--cicd-pipeline-tests--github)
+  - [3.6 Modern Web Application & REST API Layer](#36-modern-web-application--rest-api-layer-frontend--srcapi)
+  - [3.7 Quantitative Academic Evaluation & Benchmark Suite](#37-quantitative-academic-evaluation--benchmark-suite-evaluation)
   - [3.8 Differentiators: Verified Math, Model Routing, Persistent Memory](#38-differentiators-verified-math-model-routing-persistent-memory)
   - [3.9 Deploying a Public Demo Safely](#39-deploying-a-public-demo-safely)
 - [4. Roadmap & Upcoming Implementations](#4-roadmap--upcoming-implementations)
@@ -50,7 +51,7 @@
   - [6.2 Environment Configuration](#62-environment-configuration)
   - [6.3 Unified CLI Usage (Chat, Ask & Ingest)](#63-unified-cli-usage-chat-ask--ingest)
   - [6.4 End-to-End Python API Example](#64-end-to-end-python-api-example)
-  - [6.5 Running the Modern Web Application (Next.js + FastAPI)](#65-running-the-modern-web-application-nextjs--fastapi)
+  - [6.5 Running the Web Application](#65-running-the-web-application)
   - [6.6 Running the Test Suite](#66-running-the-test-suite)
   - [6.7 Running Academic Benchmarks](#67-running-academic-benchmarks)
 - [7. Questions for Faculty Advisors & Academic Feedback](#7-questions-for-faculty-advisors--academic-feedback)
@@ -68,8 +69,8 @@ Modern university students and researchers are routinely overwhelmed by hundreds
 3. **Colloquial Query Mismatches:** Students frequently formulate informal, vague study queries that fail to match the formal terminology used in textbooks.
 
 ### Our Solution
-**Study Assistant** is an end-to-end, grounded **Retrieval-Augmented Generation (RAG)** platform designed specifically for higher education. It transforms dense course documents into an interactive, pedagogical AI tutor that guarantees:
-- **Strict Grounding:** Zero outside knowledge assumption; answers are derived exclusively from course materials.
+**Study Assistant** is an end-to-end, grounded **Retrieval-Augmented Generation (RAG)** platform designed specifically for higher education. It transforms dense course documents into an interactive, pedagogical AI tutor with:
+- **Grounded answers:** the tutor is instructed to answer only from the retrieved course materials (or academic web pages in Web mode), and to say so when they do not cover the question.
 - **Numbered citations:** Claims are marked `[1]`, `[2]`, … and the reference list names the file and page. A cited PDF page is rendered under the answer.
 - **Formulas, graphs, and tables:** Math is rendered with KaTeX. A request for a plot draws a 2D curve or a 3D surface. Comparisons are markdown tables.
 - **NVIDIA Nemotron on Nebius Token Factory:** Tutor answers run on `nvidia/nemotron-3-super-120b-a12b`, while query augmentation and reranking run on `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B`, both served through **Nebius Token Factory**. Embeddings (`nvidia/llama-nemotron-embed-vl-1b-v2`) and slide vision run on **NVIDIA NIM**, which is also the LLM fallback when no Nebius key is set.
@@ -184,7 +185,7 @@ The `StudyAssistant` facade coordinates all subsystems into a unified, high-leve
 
 | Method / Feature | Implementation Details |
 | :--- | :--- |
-| `ingest(path)` | Accepts a single document (`.pdf`, `.txt`, `.md`) or an entire course directory. Automatically routes to `IngestionPipeline` and returns ingestion summaries. |
+| `ingest(path)` | Accepts a single document (`.pdf`, `.pptx`, `.ppt`, `.txt`, `.md`, `.png`, `.jpg`, `.jpeg`) or an entire course directory. Automatically routes to `IngestionPipeline` and returns ingestion summaries. |
 | `search(query)` | Executes query augmentation, dense vector retrieval, and semantic reranking without calling the LLM generator. Useful for fast source inspection and relevance audits. |
 | `ask(query, stream=False)` | Runs the full pipeline: input guards → DB empty check → retrieval → reranker → context formatting → grounded generation with page-level citations. Supports real-time token streaming. |
 | `count()` & `clear()` | Provides collection introspection and safe reset capabilities. |
@@ -193,7 +194,7 @@ The `StudyAssistant` facade coordinates all subsystems into a unified, high-leve
 
 ### 3.5 Automated Testing & CI/CD Pipeline (`tests/` & `.github/`)
 
-- **20 test modules, 207 tests, ~4 s, no live API calls.** Every external service (Token Factory, NVIDIA NIM, Tavily) is mocked. Coverage by area:
+- **20 test modules, 210 tests, ~4 s, no live API calls.** Every external service (Token Factory, NVIDIA NIM, Tavily) is mocked. Coverage by area:
   - Ingestion: `test_loader`, `test_chunker`, `test_embedder`, `test_indexer`, `test_pipeline`, `test_vision`, `test_page_images`
   - Retrieval: `test_query_augmenter`, `test_retriever`, `test_reranker`, `test_tavily`
   - Generation: `test_generator` (provider switching, streaming, Ultra routing and fallback), `test_tutor_format`, `test_plots`, `test_providers`
@@ -201,15 +202,15 @@ The `StudyAssistant` facade coordinates all subsystems into a unified, high-leve
   - Orchestration and API: `test_assistant`, `test_api` (SSE streaming, ingestion jobs, flashcards, admin guard, rate limit)
   - Evaluation: `test_evaluation`
 - **Continuous Integration (CI):**
-  - Configured via `.github/workflows/test.yml` running Pytest automatically on push and pull request against Python 3.11. All 207 tests run green on GitHub Actions without consuming live API credits.
+  - Configured via `.github/workflows/test.yml` running Pytest automatically on push and pull request against Python 3.11. All 210 tests run green on GitHub Actions without consuming live API credits.
 
 ### 3.6 Modern Web Application & REST API Layer (`frontend/` & `src/api/`)
 
-Following modern 2026 frontend vibe coding best practices, the application features an enterprise-grade full-stack interface:
+The web application is a Next.js frontend over a FastAPI backend:
 
 | Component | Technology | Responsibility |
 | :--- | :--- | :--- |
-| **Frontend Framework** | **Next.js 16 (App Router, React 19, TypeScript)** | High-prior agent architecture, responsive split-screen layouts, instant hot reloading via Turbopack. |
+| **Frontend Framework** | **Next.js 16 (App Router, React 19, TypeScript)** | Responsive split-screen layout. Built as static files (`STATIC_EXPORT=1`) for single-process hosting, or run with `npm run dev` locally. |
 | **Design System** | **Vanilla CSS (Linear/Vercel Aesthetic)** | Minimalist, zero-emoji typography, dark mode (`#0b0f17`) and light mode (`#f8fafc`) with dynamic CSS theme toggle. |
 | **REST & SSE Backend** | **FastAPI + Uvicorn (`src/api/server.py`)** | Asynchronous typed endpoints with Server-Sent Events (`/api/ask/stream`) for typewriter token streaming, background ingestion job polling (`/api/ingest/status/{job_id}`), and Prometheus telemetry (`/metrics`). |
 | **Academic Modules** | **3 Focused Views** | **Academic Tutor** (grounded citations, web search augmentation, diagram badges), **Course Materials** (PDF slide decks, `.png`/`.jpg` diagrams, Markdown notes, sample loader with live progress tracking), and **Study Flashcards** (active recall with 3D flip card self-testing). |
@@ -227,7 +228,7 @@ To empirically prove that our architectural innovations yield measurable improve
 
 #### Benchmark Comparison Results
 
-> **These numbers come from `python -m evaluation.benchmark --mock`:** an offline, deterministic run over the bundled sample dataset with a hash-based embedder and no live model calls. They show the relative effect of each pipeline stage on that dataset, not production accuracy. Run without `--mock` (with keys set) to measure against the real Nemotron embeddings and rerank.
+> **These are not measurements.** `python -m evaluation.benchmark --mock` returns fixed per-configuration values (see `_mock_pipeline_eval` in `evaluation/benchmark.py`) so CI can exercise the metrics and report code without API calls. Run `python -m evaluation.benchmark` without `--mock`, with keys set, to measure the real pipeline.
 
 | Metric | 1. Naive Baseline RAG | 2. Query Augmented RAG | 3. Our Advanced Pipeline | Relative Improvement |
 | :--- | :---: | :---: | :---: | :---: |
@@ -235,7 +236,7 @@ To empirically prove that our architectural innovations yield measurable improve
 | **Context Precision@5** | 50.0% | 55.0% | **85.0%** | **+70.0%** |
 | **Mean Reciprocal Rank (MRR)** | 0.41 | 0.65 | **0.95** | **+128.9%** |
 | **Faithfulness / Grounding** | 90.0% | 92.0% | **98.0%** | **+8.9%** |
-| **Average Latency** | **120ms** | 280ms | 450ms | *(Optimal for real-time UI)* |
+| **Average Latency** | 120ms | 280ms | 450ms | *(Trade-off)* |
 
 ### 3.8 Differentiators: Verified Math, Model Routing, Persistent Memory
 
@@ -269,23 +270,21 @@ gantt
     dateFormat  YYYY-MM-DD
     axisFormat  %b %d
     section Implemented
-    Document Ingestion & Chunking       :done, 2026-09-01, 2026-09-25
-    NVIDIA NIM & ChromaDB Vector Store  :done, 2026-09-04, 2026-09-26
-    Query Augmenter (Rewrite / HyDE)    :done, 2026-09-07, 2026-09-27
-    Study Generator (Dual-Cloud LLM)    :done, 2026-09-10, 2026-09-28
-    Semantic Reranker (Listwise)        :done, 2026-09-12, 2026-09-29
-    Unified Assistant Orchestrator      :done, 2026-09-14, 2026-09-30
-    Academic Evaluation & Benchmarks    :done, 2026-09-16, 2026-09-30
-    Next.js 16 Web UI & FastAPI Server  :done, 2026-09-16, 2026-09-30
-    Active Recall & Study Flashcards    :done, 2026-09-18, 2026-09-30
-    Prometheus Metrics & Tavily Search  :done, 2026-10-01, 2026-10-04
-    Multimodal Slide & Diagram Parser   :done, 2026-10-01, 2026-10-05
-    section Upcoming Roadmap
-    Full in-app PDF viewer with highlights :2026-10-06, 2026-10-26
-    Production Telemetry & Observability:2026-10-10, 2026-10-31
+    Embeddings, Ingestion & ChromaDB         :done, 2026-09-22, 2026-09-25
+    Query Augmenter & Study Generator        :done, 2026-09-26, 1d
+    Semantic Reranker (Listwise)             :done, 2026-09-27, 1d
+    Orchestrator, Benchmarks, Web UI & API   :done, 2026-09-29, 1d
+    Study Flashcards                         :done, 2026-09-29, 1d
+    Prometheus Metrics & Tavily Search       :done, 2026-10-05, 1d
+    Multimodal Slide & Diagram Parser        :done, 2026-10-05, 1d
+    Token Factory Nemotron, Plots & Formulas :done, 2026-10-12, 1d
+    SymPy Verification, PPTX & Chat Memory   :done, 2026-10-14, 1d
+    Public Demo Deployment                   :done, 2026-10-20, 1d
 ```
 
-### 1. Multimodal Lecture Slide & Diagram Ingestion [Completed - October 2026]
+Dates come from the git history; the project started on 17 Sep 2026 (first commit). Planned after the hackathon: a full in-app PDF viewer with highlights and production telemetry (both described below).
+
+### 4.1 Multimodal Lecture Slide & Diagram Ingestion (completed October 2026)
 - **Goal:** University lecture slides and technical papers are heavily visual (e.g., circuit diagrams, biological pathways, chemistry reactions, neural network architectures). Standard text extraction drops this crucial visual context.
 - **Implemented Architecture:**
   - **VisionDescriber Engine (`src/ingestion/vision.py`):** Powered by **NVIDIA NIM** (`meta/llama-3.2-11b-vision-instruct`). Generates comprehensive pedagogical descriptions, transcribing text labels, structural flows, axes, legends, and domain concepts.
@@ -295,11 +294,11 @@ gantt
   - **Structured Markdown Embedding:** Formats descriptions into structured context blocks (`[Visual Diagram / Slide Figure on Page X]: ...`) indexed into ChromaDB alongside page text.
   - **Frontend UI Indicators:** Document inventory displays visual diagram counts and badges, while the Citation Inspector renders explicit `[Diagram / Visual Context]` badges for multimodal evidence.
 
-### 2. Full In-App PDF Viewer (partially shipped)
+### 4.2 Full In-App PDF Viewer (partially shipped)
 - **Shipped:** every numbered citation renders the cited PDF page as an image under the answer (`src/ingestion/page_images.py`).
-- **Still planned:** When a student clicks an inline citation `[Source: lecture3.pdf, Page: 14]`, an embedded PDF viewer will jump directly to page 14 and highlight the exact matching excerpt.
+- **Still planned:** When a student clicks a numbered citation such as `[3]` that points to page 14 of `lecture3.pdf`, an embedded PDF viewer will jump directly to page 14 and highlight the exact matching excerpt.
 
-### 3. Production Telemetry & Real-Time RAG Observability
+### 4.3 Production Telemetry & Real-Time RAG Observability
 - **Goal:** Rigorously monitor live RAG performance, latency budgets, and model drift during active study sessions.
 - **Metrics to Track:**
   - **Faithfulness (Groundedness):** Real-time validation of generated claims against retrieved context via TruLens.
@@ -312,71 +311,92 @@ gantt
 ```
 study-assistant/
 ├── .github/
+│   ├── ISSUE_TEMPLATE/               # Feature issue templates (Prometheus, Tavily)
 │   └── workflows/
-│       └── test.yml                 # GitHub Actions automated CI testing workflow
-├── evaluation/                      # Quantitative academic evaluation & benchmark suite
+│       ├── test.yml                  # CI: runs the Pytest suite on push and pull request
+│       └── keepalive.yml             # Pings the hosted demo every 10 minutes
+├── bin/
+│   └── study-assistant               # Launcher: FastAPI + Next.js, plus --chat/--ask/--ingest
+├── deploy/
+│   └── push_to_space.sh              # Fallback: publish to a Hugging Face Space
+├── evaluation/                       # Evaluation & benchmark suite
 │   ├── __init__.py
-│   ├── benchmark.py                 # Multi-pipeline comparative benchmark runner
-│   ├── benchmark_report.md          # Generated empirical benchmark comparison report
-│   ├── benchmark_results.json       # Serialized benchmark dataset for UI charting
-│   ├── dataset.py                   # Curated benchmark items (formal & colloquial queries)
-│   ├── metrics.py                   # Deterministic Precision@K, Recall@K, MRR & Faithfulness
-│   └── report_generator.py          # Markdown & JSON benchmark reporting engine
-├── frontend/                        # Next.js 16 App Router Web Application
+│   ├── benchmark.py                  # Multi-pipeline comparative benchmark runner
+│   ├── benchmark_report.md           # Generated benchmark report (mock mode)
+│   ├── benchmark_results.json        # Serialized benchmark results for UI charting
+│   ├── dataset.py                    # Curated benchmark items (formal & colloquial queries)
+│   ├── metrics.py                    # Precision@K, Recall@K, MRR & Faithfulness
+│   └── report_generator.py           # Markdown & JSON benchmark reporting
+├── frontend/                         # Next.js 16 App Router web application
 │   ├── app/
-│   │   ├── globals.css              # Minimalist Vanilla CSS theme (Dark/Light modes)
-│   │   ├── layout.tsx               # Root layout & metadata
-│   │   └── page.tsx                 # Academic Tutor, Materials & Study Flashcards
-│   ├── next.config.ts               # API rewrite proxy to FastAPI (port 8000)
-│   └── package.json                 # React 19 & Next.js dependencies
+│   │   ├── globals.css               # Vanilla CSS theme (dark/light modes)
+│   │   ├── layout.tsx                # Root layout & metadata
+│   │   └── page.tsx                  # Academic Tutor, Materials & Study Flashcards
+│   ├── next.config.ts                # Dev: /api proxy to FastAPI; STATIC_EXPORT=1: static build
+│   └── package.json                  # React 19 & Next.js dependencies
+├── sample_materials/
+│   └── astronomy_kepler.txt          # Sample course notes, auto-indexed in the demo
 ├── src/
-│   ├── __init__.py                  # Top-level package exports (StudyAssistant facade)
-│   ├── assistant.py                 # Unified Assistant Orchestrator & CLI (--chat / --ask)
-│   ├── api/                         # FastAPI REST & SSE Streaming Server
+│   ├── __init__.py                   # Top-level package exports (StudyAssistant facade)
+│   ├── assistant.py                  # Unified orchestrator & CLI (--chat / --ask / --ingest)
+│   ├── providers.py                  # Token Factory / NIM provider selection & Ultra routing
+│   ├── api/
 │   │   ├── __init__.py
-│   │   └── server.py                # Typed endpoints (/api/ask/stream, /api/documents)
-│   ├── ingestion/                   # Document processing, chunking & vectorization
+│   │   └── server.py                 # FastAPI REST & SSE endpoints, demo hardening
+│   ├── ingestion/                    # Document processing, chunking & vectorization
 │   │   ├── __init__.py
-│   │   ├── chunker.py               # Recursive text chunking with overlap
-│   │   ├── embedder.py              # NVIDIA NIM embedding client (asymmetric query/passage)
-│   │   ├── indexer.py               # ChromaDB client with HNSW indexing & hash IDs
-│   │   ├── loader.py                # Multi-format document loader with page retention
-│   │   ├── pipeline.py              # End-to-end ingestion pipeline & CLI entrypoint
-│   │   ├── vision.py                # Slide-image descriptions for short PDFs
-│   │   └── page_images.py           # Renders cited PDF pages into the answer
-│   ├── retrieval/                   # Search, query expansion & context synthesis
+│   │   ├── chunker.py                # Recursive text chunking with overlap
+│   │   ├── embedder.py               # NVIDIA NIM embedding client (query/passage)
+│   │   ├── indexer.py                # ChromaDB client with HNSW indexing & hash IDs
+│   │   ├── loader.py                 # Multi-format loader (PDF, PPTX, text, images)
+│   │   ├── page_images.py            # Renders cited PDF pages into the answer
+│   │   ├── pipeline.py               # End-to-end ingestion pipeline & CLI entrypoint
+│   │   └── vision.py                 # Slide and figure descriptions via NVIDIA NIM
+│   ├── retrieval/                    # Search, query expansion & reranking
 │   │   ├── __init__.py
-│   │   ├── query_augmenter.py       # Query rewriting, multi-query expansion & HyDE
-│   │   ├── reranker.py              # Semantic cross-encoder & LLM listwise reranker
-│   │   ├── retriever.py             # Vector similarity search & context formatting
-│   │   └── tavily_search.py         # Grounded academic web search integration
-│   └── generation/                  # Grounded LLM response generation
-│       ├── __init__.py
-│       ├── generator.py             # Nemotron answer client and citation prompt
-│       ├── tutor_format.py         # Citation check, math cleanup, reference numbers
-│       └── plots.py                 # 2D/3D teaching graphs
-├── tests/                           # Complete test suite (207 passing tests)
-│   ├── conftest.py                  # Pytest fixtures & environment setup
-│   ├── test_api.py                  # FastAPI REST endpoints & SSE streaming (14 tests)
-│   ├── test_assistant.py            # Unit tests for Orchestrator & CLI (18 tests)
-│   ├── test_chunker.py              # Unit tests for text chunking (5 tests)
-│   ├── test_embedder.py             # Unit tests for NVIDIA embedding client (6 tests)
-│   ├── test_evaluation.py           # Unit tests for evaluation metrics & benchmarks (18 tests)
-│   ├── test_generator.py            # Unit tests for LLM generation & fallback logic (10 tests)
-│   ├── test_indexer.py              # Unit tests for ChromaDB storage & queries (4 tests)
-│   ├── test_loader.py               # Unit tests for document loading (7 tests)
-│   ├── test_pipeline.py             # Integration tests for ingestion pipeline (3 tests)
-│   ├── test_query_augmenter.py      # Unit tests for query augmentation strategies (11 tests)
-│   ├── test_reranker.py             # Unit tests for semantic reranker (20 tests)
-│   ├── test_retriever.py            # Unit tests for retrieval & scoring (9 tests)
-│   ├── test_tavily.py               # Unit tests for Tavily search & domain filtering (9 tests)
-│   └── test_vision.py               # Unit tests for NVIDIA vision describer (9 tests)
-├── sample_materials/                # Curated lecture notes & Kepler sample
-├── .env.example                     # Sample environment variable configuration
-├── .gitignore                       # Ignored files (virtualenvs, cache, db, node_modules)
-├── LICENSE                          # MIT License
-├── requirements.txt                 # Pinned dependencies
-└── README.md                        # Project documentation & academic report
+│   │   ├── query_augmenter.py        # Query rewriting, multi-query expansion & HyDE
+│   │   ├── reranker.py               # LLM listwise reranker & NVIDIA ranking API
+│   │   ├── retriever.py              # Vector similarity search & context formatting
+│   │   └── tavily_search.py          # Academic web search via Tavily
+│   ├── generation/                   # Grounded LLM response generation
+│   │   ├── __init__.py
+│   │   ├── generator.py              # Nemotron answer client and citation prompt
+│   │   ├── tutor_format.py           # Citation check, math cleanup, reference numbers
+│   │   └── plots.py                  # 2D/3D teaching graphs
+│   ├── verification/
+│   │   └── symbolic_verifier.py      # SymPy checks behind the "verified" math card
+│   └── memory/
+│       └── session_store.py          # SQLite chat sessions & history
+├── tests/                            # 20 test modules, 210 tests, all external APIs mocked
+│   ├── conftest.py                   # Pytest fixtures & environment setup
+│   ├── test_api.py                   # REST endpoints, SSE streaming, demo guards (20 tests)
+│   ├── test_assistant.py             # Orchestrator & CLI (18 tests)
+│   ├── test_chunker.py               # Text chunking (5 tests)
+│   ├── test_embedder.py              # NVIDIA embedding client (7 tests)
+│   ├── test_evaluation.py            # Evaluation metrics & benchmarks (18 tests)
+│   ├── test_generator.py             # Generation, provider switching, Ultra routing (16 tests)
+│   ├── test_indexer.py               # ChromaDB storage & queries (4 tests)
+│   ├── test_loader.py                # Document loading (10 tests)
+│   ├── test_page_images.py           # Cited page rendering (2 tests)
+│   ├── test_pipeline.py              # Ingestion pipeline integration (4 tests)
+│   ├── test_plots.py                 # Plot rendering (4 tests)
+│   ├── test_providers.py             # Provider resolution (4 tests)
+│   ├── test_query_augmenter.py       # Query augmentation strategies (16 tests)
+│   ├── test_reranker.py              # Semantic reranker (21 tests)
+│   ├── test_retriever.py             # Retrieval & scoring (11 tests)
+│   ├── test_session_store.py         # Chat session persistence (3 tests)
+│   ├── test_symbolic_verifier.py     # SymPy verification (7 tests)
+│   ├── test_tavily.py                # Tavily search & domain filtering (10 tests)
+│   ├── test_tutor_format.py          # Citation binding & answer cleanup (21 tests)
+│   └── test_vision.py                # NVIDIA vision describer (9 tests)
+├── .env.example                      # Sample environment configuration
+├── app.py                            # Single-process entrypoint (API + static UI on $PORT)
+├── Dockerfile                        # Two-stage build used by the Render demo
+├── DEPLOY.md                         # How to host the free public demo
+├── FEEDBACK.md                       # Feedback on Nebius Token Factory and NVIDIA tooling
+├── LICENSE                           # MIT License
+├── requirements.txt                  # Python dependencies
+└── README.md                         # Project documentation
 ```
 
 ---
@@ -385,7 +405,8 @@ study-assistant/
 
 ### 6.1 Prerequisites & Installation
 
-- Python 3.10 or 3.11+
+- Python 3.11+ (CI and the Docker image use 3.11)
+- Node.js 22 and npm (for the Next.js frontend)
 - Git
 
 Clone the repository and install dependencies in a virtual environment:
@@ -410,10 +431,10 @@ pip install -r requirements.txt
 
 ### 6.2 Environment Configuration
 
-Create a `.env` file in the project root based on `.env.example`:
+Create a `.env.local` file in the project root based on `.env.example` (`.env` also works; both are read):
 
 ```bash
-cp .env.example .env
+cp .env.example .env.local
 ```
 
 Populate your API keys:
@@ -431,6 +452,9 @@ NVIDIA_API_KEY=nvapi-your-key-here
 NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
 EMBEDDING_MODEL=nvidia/llama-nemotron-embed-vl-1b-v2
 LLM_MODEL=meta/llama-3.2-11b-vision-instruct  # only used without NEBIUS_API_KEY
+
+# Tavily: academic web search for the Web and Both source modes
+TAVILY_API_KEY=tvly-your-key-here
 ```
 
 ### 6.3 Unified CLI Usage (Chat, Ask & Ingest)
@@ -498,7 +522,7 @@ cd frontend && npm run dev
 
 ### 6.6 Running the Test Suite
 
-Execute the full suite of unit and integration tests (207 tests passing):
+Execute the full suite of unit and integration tests (210 tests):
 
 ```bash
 python -m pytest tests/ -v
@@ -533,14 +557,14 @@ We are actively seeking feedback from professors and academic mentors on the fol
 
 ## 8. Hackathon Evaluation Alignment
 
-This project is built to satisfy the core evaluation criteria of the **Nebius x NVIDIA Hackathon**:
+How the project maps to the four equally weighted judging criteria of the **Nebius x NVIDIA Global AI Hackathon**:
 
-| Hackathon Criterion | Project Implementation & Proof Points |
+| Judging Criterion | Project Implementation & Proof Points |
 | :--- | :--- |
-| **NVIDIA Technology Utilization** | • NVIDIA NIM `nvidia/llama-nemotron-embed-vl-1b-v2` for state-of-the-art embedding retrieval.<br/>• NVIDIA NIM `meta/llama-3.2-11b-vision-instruct` to describe slide figures and diagrams at ingestion.<br/>• Nemotron 3 Nano reranks retrieved passages (an optional dedicated NVIDIA `/v1/ranking` service is supported). |
-| **Nebius Token Factory Integration** | • Every chat completion (answers, query augmentation, reranking) runs on Nebius Token Factory when `NEBIUS_API_KEY` is set.<br/>• Nemotron 3 Super for grounded answers; Nemotron 3 Nano for the fast retrieval-side calls; Nemotron 3 Ultra for derivations, proofs and calculations (automatic fallback to Super). |
-| **Technical Depth & Engineering Rigor** | • Complete separation of concerns (ETL, Vector Indexing, Query Augmentation, Generation).<br/>• Idempotent chunking with SHA-256 deterministic IDs, eliminating ghost chunks.<br/>• 14 automated test suites (207 passing tests) with GitHub Actions CI pipeline and quantitative empirical benchmark suite. |
-| **Real-World Impact & Feasibility** | • Solves a tangible, daily problem for thousands of university students and faculty.<br/>• Strict zero-hallucination guardrails and auditable page-level citations. |
+| **Technological Implementation** | • Every chat completion (answers, query augmentation, reranking) runs on Nebius Token Factory: Nemotron 3 Super for grounded answers, Nemotron 3 Nano for the fast retrieval-side calls, Nemotron 3 Ultra for derivations, proofs and calculations (automatic fallback to Super).<br/>• NVIDIA NIM `nvidia/llama-nemotron-embed-vl-1b-v2` embeddings and `meta/llama-3.2-11b-vision-instruct` slide descriptions.<br/>• SymPy checks equations in answers before showing a "verified" card.<br/>• 20 test modules (210 tests) with GitHub Actions CI. |
+| **Design** | • One app with three views: Academic Tutor, Course Materials and Study Flashcards.<br/>• Numbered citations render the cited PDF page under the answer; KaTeX formulas, 2D/3D plots and comparison tables.<br/>• Persistent chat history and a Notes / Web / Both source switch. |
+| **Potential Impact** | • Students preparing for exams get answers drawn only from their own course materials, with the source page shown, so they can check every claim. |
+| **Quality of the Idea** | • Combines grounded retrieval with symbolic math verification and model-size routing by task, instead of trusting a single model's answer. |
 
 ---
 
@@ -548,6 +572,6 @@ This project is built to satisfy the core evaluation criteria of the **Nebius x 
 
 - **License:** Distributed under the [MIT License](LICENSE).
 - **Special Thanks:**
-  - **Nebius AI Studio** for cloud GPU compute and OpenAI-compatible inference APIs.
+  - **Nebius Token Factory** for hosted Nemotron inference through an OpenAI-compatible API.
   - **NVIDIA** for high-efficiency NIM microservices and cutting-edge retrieval models.
   - Course instructors and faculty advisors for pedagogical guidance and course data testing.
