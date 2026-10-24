@@ -11,6 +11,9 @@ import uvicorn
 os.environ.setdefault("AUTO_INGEST_SAMPLE", "true")
 os.environ.setdefault("DEMO_MODE", "true")
 os.environ.setdefault("RATE_LIMIT_PER_MIN", "20")
+os.environ.setdefault("DEMO_MAX_PER_MIN", "30")
+os.environ.setdefault("DEMO_MAX_PER_DAY", "500")
+os.environ.setdefault("ULTRA_MAX_PER_HOUR", "20")
 os.environ.setdefault("MAX_UPLOAD_MB", "50")
 
 from src.api.server import app  # noqa: E402

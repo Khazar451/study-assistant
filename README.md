@@ -254,8 +254,14 @@ The API is open by default for local development. On a shared deployment set the
 | :--- | :--- |
 | `DEMO_MODE=true` | `POST /api/clear` (wipe the index) returns 403 for everyone. |
 | `ADMIN_TOKEN=...` | `POST /api/clear` requires the `X-Admin-Token` header to match. Works with or without `DEMO_MODE`. |
-| `RATE_LIMIT_PER_MIN=30` | Per-client cap on `/api/ask`, `/api/ask/stream`, `/api/search`, `/api/flashcards` and `/api/ingest/file`; excess requests get `429` with `Retry-After`. `0` disables. |
+| `RATE_LIMIT_PER_MIN=20` | Per-client cap on `/api/ask`, `/api/ask/stream`, `/api/search`, `/api/flashcards`, `/api/ingest/file` and `/api/ingest/sample`; excess requests get `429` with `Retry-After`. `0` disables. |
+| `TRUSTED_PROXY_HOPS=1` | How many proxies in front of the app append to `X-Forwarded-For`. The client address is read that many entries from the right, so a client cannot spoof it. `0` (default) uses the connecting address, which is right for local development. |
+| `DEMO_MAX_PER_MIN=30`, `DEMO_MAX_PER_DAY=500` | Caps on the same endpoints across all visitors together; excess requests get `503` with `Retry-After`. `0` disables. |
+| `DEMO_PAUSED=true` | Those endpoints return `503` at once, to stop spending credits without a redeploy. |
+| `ULTRA_MAX_PER_HOUR=20` | At most this many Nemotron 3 Ultra calls per hour; after that, questions are answered by Super. `0` (default) means no cap. |
 | `MAX_UPLOAD_MB=50` | Upload size cap (default 200). |
+
+Questions are limited to 2,000 characters (`422` above that), and the UI enforces the same limit.
 | `CORS_ORIGINS=https://your-frontend.example` | Comma-separated allowed origins (default `*`). |
 
 ---

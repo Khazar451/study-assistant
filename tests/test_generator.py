@@ -230,6 +230,24 @@ def test_ultra_failure_falls_back_to_super(monkeypatch, mock_openai_client):
     assert "super" in result["model"].lower()
 
 
+def test_ultra_hourly_cap_falls_back_to_super(monkeypatch, mock_openai_client):
+    from src import providers
+
+    providers._reasoning_calls.clear()
+    monkeypatch.setenv("ULTRA_MAX_PER_HOUR", "1")
+    generator = _nebius_generator(monkeypatch, mock_openai_client)
+    create = mock_openai_client.chat.completions.create
+
+    first = generator.generate("Derive the integral of x*e^x", context="[Document 1] x")
+    assert "ultra" in create.call_args.kwargs["model"].lower()
+    assert "ultra" in first["model"].lower()
+
+    second = generator.generate("Derive the integral of x*sin(x)", context="[Document 1] x")
+    assert "super" in create.call_args.kwargs["model"].lower()
+    assert "super" in second["model"].lower()
+    providers._reasoning_calls.clear()
+
+
 def test_router_can_be_disabled(monkeypatch, mock_openai_client):
     monkeypatch.setenv("ENABLE_REASONING_ROUTER", "false")
     monkeypatch.setenv("NEBIUS_API_KEY", "neb-test-key")
