@@ -24,10 +24,16 @@ Render fills in `PORT` itself; `app.py` reads it.
 
 ### Free-tier behavior
 - Free web services spin down after a period without traffic and wake on the next request (about a minute).
-  Keep it awake by pinging `https://<service-name>.onrender.com/api/status` every 10 minutes with a free monitor
-  (UptimeRobot, cron-job.org or a scheduled GitHub Action). That endpoint calls no model, so it costs nothing.
+  Keep it awake by pinging `https://<service-name>.onrender.com/api/status` every 10 minutes with a free external
+  monitor (UptimeRobot or cron-job.org). That endpoint calls no model, so it costs nothing. The scheduled GitHub
+  Action in `keepalive.yml` is only a backup: GitHub ran it every 2 to 5 hours, not every 10 minutes.
 - Check Render's pricing page for the current free-tier hour limits before relying on 24/7 uptime until Dec 15.
-- Storage is ephemeral: uploads and chat history reset on restart or redeploy. The sample re-indexes itself on every start.
+- Storage is ephemeral: uploads and chat history reset on restart or redeploy. The sample re-indexes itself on every
+  start from `sample_materials/astronomy_kepler.index.json` (precomputed vectors), so it needs no embedding call and
+  is searchable seconds after a wake-up. `/api/status` shows `sample_ready` and, if indexing failed, `sample_error`.
+- After changing the sample text, the chunk settings or `EMBEDDING_MODEL`, rebuild that file with
+  `python -m src.ingestion.sample_index` (needs the NVIDIA key); with a mismatched model the server ignores it and
+  embeds the sample live instead.
 
 ## What the demo container sets
 - `DEMO_MODE=true`: the "clear index" endpoint is disabled for visitors.

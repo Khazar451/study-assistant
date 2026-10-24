@@ -1,7 +1,8 @@
 name: Keep demo awake
 
-# Pings the hosted demo so the free Render instance does not spin down.
-# /api/status calls no model, so it costs nothing.
+# Backup ping for the hosted demo. /api/status calls no model, so it costs nothing.
+# GitHub delays scheduled workflows heavily (observed: every 2-5 hours, not every 10 minutes),
+# so this alone does not keep a free Render instance awake; use an external monitor (DEPLOY.md).
 on:
   schedule:
     - cron: "*/10 * * * *"

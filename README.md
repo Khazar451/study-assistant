@@ -321,7 +321,7 @@ study-assistant/
 │   ├── ISSUE_TEMPLATE/               # Feature issue templates (Prometheus, Tavily)
 │   └── workflows/
 │       ├── test.yml                  # CI: runs the Pytest suite on push and pull request
-│       └── keepalive.yml             # Pings the hosted demo every 10 minutes
+│       └── keepalive.yml             # Backup ping for the hosted demo (an external monitor keeps it awake)
 ├── bin/
 │   └── study-assistant               # Launcher: FastAPI + Next.js, plus --chat/--ask/--ingest
 ├── deploy/
@@ -342,7 +342,8 @@ study-assistant/
 │   ├── next.config.ts                # Dev: /api proxy to FastAPI; STATIC_EXPORT=1: static build
 │   └── package.json                  # React 19 & Next.js dependencies
 ├── sample_materials/
-│   └── astronomy_kepler.txt          # Sample course notes, auto-indexed in the demo
+│   ├── astronomy_kepler.txt          # Sample course notes, auto-indexed in the demo
+│   └── astronomy_kepler.index.json   # Precomputed sample vectors (python -m src.ingestion.sample_index)
 ├── src/
 │   ├── __init__.py                   # Top-level package exports (StudyAssistant facade)
 │   ├── assistant.py                  # Unified orchestrator & CLI (--chat / --ask / --ingest)
