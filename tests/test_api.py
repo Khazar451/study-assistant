@@ -174,6 +174,40 @@ async def test_api_ask_stream_disconnect(mock_assistant):
     assert not any("done" in e for e in events)
 
 
+@pytest.mark.anyio
+async def test_ask_stream_does_not_block_other_requests(mock_assistant):
+    """A slow retrieval in one stream must not stall unrelated requests on the shared event loop."""
+    import asyncio
+    import time
+
+    import httpx
+
+    def slow_search(**_):
+        time.sleep(2.0)
+        return [{"text": "Kepler chunk", "metadata": {"source": "kepler.txt", "page": 1}, "rerank_score": 0.9}]
+
+    mock_assistant.search.side_effect = slow_search
+    mock_assistant.generator.generate_stream.return_value = iter(["Kepler."])
+    status_done_at: list = []
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as ac:
+        async def ask():
+            res = await ac.get("/api/ask/stream", params={"query": "kepler", "augment": "false"})
+            assert '"type": "done"' in res.text
+
+        async def status():
+            await asyncio.sleep(0.3)  # let the stream reach its slow retrieval first
+            res = await ac.get("/api/status")
+            status_done_at.append(time.perf_counter() - start)
+            assert res.status_code == 200
+
+        # Timed from the start: a blocked loop delays even the sleep above, so status would finish after 2 s.
+        start = time.perf_counter()
+        await asyncio.gather(ask(), status())
+
+    assert status_done_at[0] < 1.5
+
+
 def test_api_flashcards(client, mock_assistant):
     res = client.post("/api/flashcards", json={"count": 2})
     assert res.status_code == 200
