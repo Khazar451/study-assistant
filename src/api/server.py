@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 import hmac
 import json
 import logging
@@ -748,7 +749,10 @@ def _ingest_kwargs(assistant: Any, workspace: Optional[str], progress_callback: 
 # Ingestion Job Tracker
 ingestion_jobs: Dict[str, Dict[str, Any]] = {}
 _job_workspace: Dict[str, Optional[str]] = {}
+# Uploads are indexed one at a time, in arrival order, by a single worker; the lock also covers the
+# synchronous path, so ChromaDB is never written by two uploads at once.
 _ingest_lock = threading.Lock()
+_ingest_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ingest")
 _log = logging.getLogger("study.ingest")
 MAX_UPLOAD_BYTES = int(float(os.getenv("MAX_UPLOAD_MB", "200")) * 1024 * 1024)
 
@@ -786,15 +790,66 @@ def _run_ingestion_worker(job_id: str, target_path: Path, filename: str, workspa
             ingestion_jobs[job_id]["completed_at"] = time.time()
 
 
+# First bytes each binary format starts with, so a renamed file is refused before it is parsed.
+_FILE_SIGNATURES = {
+    ".pptx": b"PK\x03\x04",
+    ".ppt": b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1",
+    ".png": b"\x89PNG\r\n\x1a\n",
+    ".jpg": b"\xff\xd8\xff",
+    ".jpeg": b"\xff\xd8\xff",
+}
+
+
+def _matches_type(ext: str, head: bytes) -> bool:
+    if ext in {".txt", ".md"}:
+        return b"\x00" not in head  # text, not a binary file renamed to .txt
+    if ext == ".pdf":
+        return b"%PDF-" in head[:1024]  # the PDF format allows a few bytes before its header
+    signature = _FILE_SIGNATURES.get(ext)
+    return signature is not None and head.startswith(signature)
+
+
+def _check_upload_quota(workspace: str, upload_dir: Path, name: str) -> None:
+    """Per-visitor limits on the shared demo: uploads in progress and files kept."""
+    max_pending = _env_int("MAX_PENDING_UPLOADS", 3)
+    pending = sum(
+        1 for job_id, job in ingestion_jobs.items()
+        if _job_workspace.get(job_id) == workspace and job.get("status") == "processing"
+    )
+    if max_pending and pending >= max_pending:
+        raise HTTPException(
+            status_code=429,
+            detail=f"You already have {pending} uploads being processed. Please wait for one to finish.",
+        )
+    max_files = _env_int("MAX_FILES_PER_WORKSPACE", 5)
+    kept = [p for p in upload_dir.iterdir() if p.is_file()] if upload_dir.is_dir() else []
+    if max_files and len(kept) >= max_files and not (upload_dir / name).exists():
+        raise HTTPException(
+            status_code=409,
+            detail=f"This demo keeps at most {max_files} files per visitor. Upload a file with the same name to replace it.",
+        )
+
+
+def _ingest_locked(assistant: Any, target_path: Path, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    with _ingest_lock:
+        return assistant.ingest(target_path, **kwargs)
+
+
 async def _save_upload(file: UploadFile, target_path: Path) -> int:
     """Write an upload to disk in chunks so a textbook is not held entirely in memory."""
     size = 0
+    ext = target_path.suffix.lower()
     try:
         with open(target_path, "wb") as handle:
             while True:
                 block = await file.read(1024 * 1024)
                 if not block:
                     break
+                if size == 0 and not _matches_type(ext, block):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"This file's content does not match its {ext} extension. Please upload the original file.",
+                    )
                 size += len(block)
                 if size > MAX_UPLOAD_BYTES:
                     raise HTTPException(
@@ -838,6 +893,8 @@ async def ingest_file(
     upload_dir.mkdir(parents=True, exist_ok=True)
     safe_name = Path(filename).name
     target_path = upload_dir / safe_name
+    if workspace is not None:
+        _check_upload_quota(workspace, upload_dir, safe_name)
     await _save_upload(file, target_path)
 
     job_id = str(uuid.uuid4())
@@ -858,12 +915,7 @@ async def ingest_file(
     assistant = get_assistant()
 
     if background:
-        threading.Thread(
-            target=_run_ingestion_worker,
-            args=(job_id, target_path, safe_name, workspace),
-            name=f"ingest-{job_id[:8]}",
-            daemon=True,
-        ).start()
+        _ingest_executor.submit(_run_ingestion_worker, job_id, target_path, safe_name, workspace)
         return {
             "success": True,
             "job_id": job_id,
@@ -881,7 +933,7 @@ async def ingest_file(
                 ingestion_jobs[job_id]["updated_at"] = time.time()
 
         result = await run_in_threadpool(
-            assistant.ingest, target_path, **_ingest_kwargs(assistant, workspace, on_progress)
+            _ingest_locked, assistant, target_path, _ingest_kwargs(assistant, workspace, on_progress)
         )
 
         ingestion_jobs[job_id]["status"] = "completed"

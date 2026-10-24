@@ -45,6 +45,9 @@ Render fills in `PORT` itself; `app.py` reads it.
 - To stop all model spending at once, set `DEMO_PAUSED=true` in the service's environment.
 - Workspace isolation is on because `DEMO_MODE=true`: each browser gets a private `sa_workspace` cookie and sees only
   its own chats, uploads and search results, plus the shared sample.
+- With isolation, each visitor may have 3 uploads in progress and keep 5 files (`MAX_PENDING_UPLOADS`,
+  `MAX_FILES_PER_WORKSPACE`). There is no page or chunk limit: a whole textbook is accepted, but costs one embedding
+  call per 8 chunks (a 1,200-page book is about 900 calls) and holds the single upload worker while it runs.
 - `AUTO_INGEST_SAMPLE=true`: indexes `sample_materials/astronomy_kepler.txt` so a judge can ask a question immediately.
 
 ## Other hosts

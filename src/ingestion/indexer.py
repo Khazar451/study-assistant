@@ -183,6 +183,10 @@ class ChromaIndexer:
         if ids or where:
             self.collection.delete(ids=ids, where=where)
 
+    def ids_for_path(self, file_path: str) -> List[str]:
+        """IDs of every chunk indexed from one file."""
+        return list(self.collection.get(where={"file_path": str(file_path)}, include=[])["ids"])
+
     def delete_by_path(self, file_path: str) -> None:
         """Delete all chunks originating from a specific file to prevent ghost chunks."""
         self.collection.delete(where={"file_path": str(file_path)})
