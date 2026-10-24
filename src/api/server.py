@@ -7,6 +7,7 @@ import logging
 import os
 from pathlib import Path
 import re
+import secrets
 import threading
 import time
 from typing import Any, Deque, Dict, Iterator, List, Optional
@@ -45,6 +46,7 @@ app = FastAPI(
 # TRUSTED_PROXY_HOPS: proxies in front of the app that append to X-Forwarded-For (0 = use the socket peer).
 # DEMO_MAX_PER_MIN / DEMO_MAX_PER_DAY: caps on those endpoints across all visitors together (0 disables).
 # DEMO_PAUSED=true: those endpoints return 503, so credits stop being spent at once.
+# WORKSPACE_ISOLATION: give each browser its own chats (defaults to DEMO_MODE; local development stays shared).
 # MAX_UPLOAD_MB: upload size cap (default 200).
 _cors_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",") if o.strip()] or ["*"]
 app.add_middleware(
@@ -159,6 +161,65 @@ async def rate_limit_llm_endpoints(request: Request, call_next):
         if refusal is not None:
             return refusal
     return await call_next(request)
+
+
+WORKSPACE_COOKIE = "sa_workspace"
+_WORKSPACE_RE = re.compile(r"[0-9a-f]{32}")
+
+
+def _workspace_isolation() -> bool:
+    if os.getenv("WORKSPACE_ISOLATION") is not None:
+        return _env_flag("WORKSPACE_ISOLATION")
+    return _demo_mode()
+
+
+@app.middleware("http")
+async def assign_workspace(request: Request, call_next):
+    """Give each browser an unguessable workspace ID in a cookie when isolation is on.
+
+    A cookie (not a header) because citations open files and page images through plain links,
+    which cannot carry custom headers.
+    """
+    if not _workspace_isolation():
+        request.state.workspace = None
+        return await call_next(request)
+    current = request.cookies.get(WORKSPACE_COOKIE, "")
+    is_new = not _WORKSPACE_RE.fullmatch(current)
+    request.state.workspace = secrets.token_hex(16) if is_new else current
+    response = await call_next(request)
+    if is_new:
+        response.set_cookie(
+            WORKSPACE_COOKIE,
+            request.state.workspace,
+            max_age=30 * 24 * 3600,
+            httponly=True,
+            samesite="lax",
+            secure=request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https",
+        )
+    return response
+
+
+def current_workspace(request: Request) -> Optional[str]:
+    """The caller's workspace ID, or None when every visitor shares one library (local development)."""
+    return getattr(request.state, "workspace", None)
+
+
+def _claim_session(session_id: Optional[str], workspace: Optional[str]) -> None:
+    """Make sure a client-supplied session ID is the caller's own before it is read or written.
+
+    An unknown ID is created for the caller; one owned by another workspace answers 404, the same
+    as a session that does not exist, so IDs cannot be probed.
+    """
+    if not session_id or workspace is None:
+        return
+    from src.memory.session_store import get_session_store
+
+    store = get_session_store()
+    exists, owner = store.session_owner(session_id)
+    if not exists:
+        store.create_session(session_id=session_id, workspace=workspace)
+    elif owner != workspace:
+        raise HTTPException(status_code=404, detail="Session not found")
 
 
 def require_admin(x_admin_token: Optional[str] = Header(None)) -> None:
@@ -847,8 +908,9 @@ def _is_indexed(assistant: Any, path: Path) -> bool:
 
 
 @app.post("/api/ask")
-def ask_question(req: AskRequest) -> Dict[str, Any]:
+def ask_question(req: AskRequest, workspace: Optional[str] = Depends(current_workspace)) -> Dict[str, Any]:
     """Generate a grounded academic response with verified inline citations."""
+    _claim_session(req.session_id, workspace)
     assistant = get_assistant()
     start_time = time.time()
 
@@ -950,8 +1012,11 @@ async def ask_stream(
     fallback_to_web: bool = Query(True),
     source_mode: str = Query("", description="notes, web, or both. Overrides use_web when set."),
     session_id: Optional[str] = Query(None, description="Optional chat session ID for multi-turn conversational memory"),
+    workspace: Optional[str] = Depends(current_workspace),
 ):
     """Server-Sent Events (SSE) token-by-token streaming endpoint for real-time typewriter UI."""
+    # Checked before streaming starts, so a foreign session ID gets a plain 404 instead of an event stream.
+    await run_in_threadpool(_claim_session, session_id, workspace)
     assistant = await run_in_threadpool(get_assistant)
 
     async def event_generator():
@@ -1150,27 +1215,33 @@ def clear_database() -> Dict[str, Any]:
 
 
 @app.get("/api/chat/sessions")
-def list_chat_sessions() -> List[Dict[str, Any]]:
-    """List all saved chat sessions ordered by last updated."""
+def list_chat_sessions(workspace: Optional[str] = Depends(current_workspace)) -> List[Dict[str, Any]]:
+    """List the caller's saved chat sessions ordered by last updated."""
     from src.memory.session_store import get_session_store
-    return get_session_store().list_sessions()
+    return get_session_store().list_sessions(workspace=workspace)
 
 
 @app.post("/api/chat/sessions")
-def create_chat_session(req: Optional[CreateSessionRequest] = None) -> Dict[str, Any]:
+def create_chat_session(
+    req: Optional[CreateSessionRequest] = None,
+    workspace: Optional[str] = Depends(current_workspace),
+) -> Dict[str, Any]:
     """Create a new chat session."""
     from src.memory.session_store import get_session_store
+    store = get_session_store()
     title = req.title if req and req.title else "New Chat"
     session_id = req.session_id if req else None
-    return get_session_store().create_session(session_id=session_id, title=title)
+    if session_id and store.session_owner(session_id)[0]:
+        raise HTTPException(status_code=409, detail="That session ID is already in use.")
+    return store.create_session(session_id=session_id, title=title, workspace=workspace)
 
 
 @app.get("/api/chat/sessions/{session_id}")
-def get_chat_session(session_id: str) -> Dict[str, Any]:
+def get_chat_session(session_id: str, workspace: Optional[str] = Depends(current_workspace)) -> Dict[str, Any]:
     """Fetch a chat session and its full message history."""
     from src.memory.session_store import get_session_store
     store = get_session_store()
-    session = store.get_session(session_id)
+    session = store.get_session(session_id, workspace=workspace)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     messages = store.get_session_messages(session_id)
@@ -1181,22 +1252,24 @@ def get_chat_session(session_id: str) -> Dict[str, Any]:
 
 
 @app.patch("/api/chat/sessions/{session_id}")
-def rename_chat_session(session_id: str, req: RenameSessionRequest) -> Dict[str, Any]:
+def rename_chat_session(
+    session_id: str, req: RenameSessionRequest, workspace: Optional[str] = Depends(current_workspace)
+) -> Dict[str, Any]:
     """Rename a chat session title."""
     from src.memory.session_store import get_session_store
     store = get_session_store()
-    success = store.rename_session(session_id, req.title)
+    success = store.rename_session(session_id, req.title, workspace=workspace)
     if not success:
         raise HTTPException(status_code=404, detail="Session not found")
     return {"success": True, "id": session_id, "title": req.title}
 
 
 @app.delete("/api/chat/sessions/{session_id}")
-def delete_chat_session(session_id: str) -> Dict[str, Any]:
+def delete_chat_session(session_id: str, workspace: Optional[str] = Depends(current_workspace)) -> Dict[str, Any]:
     """Delete a chat session and all its messages."""
     from src.memory.session_store import get_session_store
     store = get_session_store()
-    success = store.delete_session(session_id)
+    success = store.delete_session(session_id, workspace=workspace)
     if not success:
         raise HTTPException(status_code=404, detail="Session not found")
     return {"success": True, "id": session_id}

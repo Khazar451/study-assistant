@@ -37,6 +37,8 @@ Render fills in `PORT` itself; `app.py` reads it.
   copying this value: a wrong count either lets clients spoof their address or puts all visitors in one bucket.
 - `DEMO_MAX_PER_MIN=30` and `DEMO_MAX_PER_DAY=500` across all visitors together; `ULTRA_MAX_PER_HOUR=20`.
 - To stop all model spending at once, set `DEMO_PAUSED=true` in the service's environment.
+- Workspace isolation is on because `DEMO_MODE=true`: each browser gets a private `sa_workspace` cookie and sees only
+  its own chats.
 - `AUTO_INGEST_SAMPLE=true`: indexes `sample_materials/astronomy_kepler.txt` so a judge can ask a question immediately.
 
 ## Other hosts
