@@ -105,11 +105,15 @@ class IngestionPipeline:
         if progress_callback:
             progress_callback(0, total_chunks)
 
-        # Eliminate ghost chunks by removing prior entries for this file
-        if hasattr(self.indexer, "delete_by_path"):
-            self.indexer.delete_by_path(str(path))
-        elif hasattr(self.indexer, "delete"):
-            self.indexer.delete(where={"file_path": str(path)})
+        # Replace this file's chunks without a gap: the new ones are written first and the previous
+        # version's leftovers removed afterwards, so a failure part-way keeps the file searchable.
+        previous_ids = self._indexed_ids(str(path))
+        if previous_ids is None:
+            # Indexer cannot list a file's chunks: fall back to clearing them up front.
+            if hasattr(self.indexer, "delete_by_path"):
+                self.indexer.delete_by_path(str(path))
+            elif hasattr(self.indexer, "delete"):
+                self.indexer.delete(where={"file_path": str(path)})
 
         # Assign deterministic IDs, chunk indices, and ensure no None metadata values
         for idx, chunk in enumerate(chunks):
@@ -159,11 +163,24 @@ class IngestionPipeline:
             if progress_callback:
                 progress_callback(processed, total_chunks)
 
+        new_ids = {c.metadata["chunk_id"] for c in chunks}
+        leftovers = [chunk_id for chunk_id in previous_ids or [] if chunk_id not in new_ids]
+        if leftovers:
+            self.indexer.delete(ids=leftovers)
+
         return {
             "source": path.name,
             "chunks_count": len(chunks),
             "status": "success",
         }
+
+    def _indexed_ids(self, file_path: str) -> Optional[List[str]]:
+        """IDs already indexed for this file, or None when the indexer cannot list them."""
+        lister = getattr(self.indexer, "ids_for_path", None)
+        if not callable(lister):
+            return None
+        ids = lister(file_path)
+        return list(ids) if isinstance(ids, (list, tuple, set)) else None
 
     def ingest_directory(
         self, dir_path: Union[str, Path], recursive: bool = True
