@@ -1,7 +1,8 @@
 # Free public demo
 
 The repo ships a `Dockerfile` that builds the UI as static files and runs everything in **one Python process**
-(`app.py`: FastAPI serves the API and the UI). Memory use is about 170 to 300 MB, so it fits free 512 MB tiers.
+(`app.py`: FastAPI serves the API and the UI), plus one small helper process for time-limited math checks. Memory use
+is about 170 to 300 MB for the server and about 80 MB for the helper, so it fits free 512 MB tiers.
 All model calls go to Nebius Token Factory, NVIDIA NIM and Tavily, so no GPU is needed.
 
 ## Render (free web service, builds straight from GitHub)

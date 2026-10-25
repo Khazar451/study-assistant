@@ -28,7 +28,7 @@ from src.ingestion.sample_index import SAMPLE_PATH, load_embedding_cache
 from src.generation.tutor_format import allowed_source_keys, bind_numbered_citations, infer_grounding, polish_tutor_answer
 from src import providers
 from src.providers import PROVIDER_LABELS
-from src.verification.symbolic_verifier import verify_math_solution
+from src.verification.time_limited import TimeLimitedVerifier
 
 # Load environment configuration
 load_dotenv(".env.local")
@@ -255,6 +255,24 @@ RAG_QUERIES_TOTAL = Counter(
     "Total student academic queries processed",
     ["mode", "use_web"],
 )
+
+_error_log = logging.getLogger("study.errors")
+
+
+def _internal_error(action: str, exc: BaseException) -> str:
+    """Log an unexpected failure in full and return a message that is safe to show visitors.
+
+    Exception text can carry upstream API responses, file paths or library internals, so it stays in
+    the server log; the short reference ties the visitor's message to that log line.
+    """
+    ref = secrets.token_hex(3)
+    _error_log.error("%s failed (ref %s)", action, ref, exc_info=exc)
+    return f"{action} failed (ref {ref}). Please try again."
+
+
+# SymPy checks of generated math run in a helper process with a time limit (VERIFY_TIMEOUT_S, default 3 s);
+# a check that runs over is skipped, so a runaway expression cannot pin a CPU core.
+_math_verifier = TimeLimitedVerifier(timeout=float(os.getenv("VERIFY_TIMEOUT_S", "3")))
 
 # Global singleton instance (guarded: the startup sample-ingest thread and the first request can race)
 _assistant_instance: Optional[StudyAssistant] = None
@@ -614,7 +632,7 @@ def _finalize_answer(
         attach_page_images(references, answer)
     answer = ensure_requested_plot(query, embed_plots(answer))
     sources = [ref["label"] for ref in references]
-    verification = verify_math_solution(answer)
+    verification = _math_verifier.verify(answer)
 
     # Persist conversation turn to SQLite session store
     if session_id:
@@ -706,7 +724,7 @@ def get_documents(workspace: Optional[str] = Depends(current_workspace)) -> Dict
             "total_chunks": assistant.count(),
             "total_documents": 0,
             "documents": [],
-            "error": str(e),
+            "error": _internal_error("Listing documents", e),
         }
 
 
@@ -753,7 +771,6 @@ _job_workspace: Dict[str, Optional[str]] = {}
 # synchronous path, so ChromaDB is never written by two uploads at once.
 _ingest_lock = threading.Lock()
 _ingest_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ingest")
-_log = logging.getLogger("study.ingest")
 MAX_UPLOAD_BYTES = int(float(os.getenv("MAX_UPLOAD_MB", "200")) * 1024 * 1024)
 
 
@@ -783,10 +800,10 @@ def _run_ingestion_worker(job_id: str, target_path: Path, filename: str, workspa
                     assistant.count() if hasattr(assistant, "count") else 0
                 )
     except Exception as e:
-        _log.exception("Ingestion failed for %s", filename)
+        message = _internal_error(f"Indexing {filename}", e)
         if job_id in ingestion_jobs:
             ingestion_jobs[job_id]["status"] = "failed"
-            ingestion_jobs[job_id]["error"] = str(e)
+            ingestion_jobs[job_id]["error"] = message
             ingestion_jobs[job_id]["completed_at"] = time.time()
 
 
@@ -948,9 +965,12 @@ async def ingest_file(
             "total_indexed_chunks": assistant.count() if hasattr(assistant, "count") else 0,
         }
     except Exception as e:
+        message = e.detail if isinstance(e, HTTPException) else _internal_error(f"Indexing {safe_name}", e)
         ingestion_jobs[job_id]["status"] = "failed"
-        ingestion_jobs[job_id]["error"] = str(e)
-        raise HTTPException(status_code=500, detail=f"Ingestion failed: {str(e)}")
+        ingestion_jobs[job_id]["error"] = message
+        if isinstance(e, HTTPException):
+            raise
+        raise HTTPException(status_code=500, detail=message)
 
 
 @app.get("/api/ingest/status/{job_id}")
@@ -993,7 +1013,7 @@ def ingest_sample() -> Dict[str, Any]:
             **({"embedding_cache": cache} if cache else {}),
         )
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Ingestion failed: {exc}") from exc
+        raise HTTPException(status_code=500, detail=_internal_error("Indexing the sample", exc)) from exc
     return {
         "success": True,
         "material": "Kepler's Laws of Planetary Motion",
@@ -1035,7 +1055,7 @@ def ask_question(req: AskRequest, workspace: Optional[str] = Depends(current_wor
     )
 
     duration_ms = round((time.time() - start_time) * 1000, 1)
-    verification = verify_math_solution(res.get("answer", ""))
+    verification = _math_verifier.verify(res.get("answer", ""))
 
     return {
         **res,
@@ -1184,7 +1204,7 @@ async def ask_stream(
             ):
                 yield event
         except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'error': _internal_error('Answering', e)})}\n\n"
 
     return StreamingResponse(
         event_generator(),
@@ -1236,6 +1256,17 @@ def get_plot(name: str):
     return FileResponse(image, media_type="image/png")
 
 
+def _json_array(content: str) -> List[Dict[str, Any]]:
+    """The JSON array in a model reply, tolerating code fences and text around it."""
+    start, end = content.find("["), content.rfind("]")
+    if start == -1 or end < start:
+        raise ValueError("No JSON array in the model reply")
+    data = json.loads(content[start : end + 1])
+    if not isinstance(data, list) or not all(isinstance(item, dict) for item in data):
+        raise ValueError("The model reply is not a list of cards")
+    return data
+
+
 @app.post("/api/flashcards")
 def generate_flashcards(req: FlashcardsRequest, workspace: Optional[str] = Depends(current_workspace)) -> Dict[str, Any]:
     """Generate grounded active-recall flashcards from indexed course materials."""
@@ -1264,24 +1295,13 @@ def generate_flashcards(req: FlashcardsRequest, workspace: Optional[str] = Depen
     )
 
     try:
-        llm_client = assistant.generator.client
-        model = assistant.generator.model
-        resp = llm_client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": "You are a precise academic study assistant that outputs strict JSON."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.2,
+        # Short structured output: the fast model with thinking off, a token budget, reasoning stripped.
+        content = assistant.generator.complete_text(
+            system_prompt="You are a precise academic study assistant that outputs strict JSON.",
+            user_prompt=prompt,
+            max_tokens=1500,
         )
-        content = resp.choices[0].message.content.strip()
-        # Parse JSON
-        if content.startswith("```json"):
-            content = content.replace("```json", "", 1).rsplit("```", 1)[0].strip()
-        elif content.startswith("```"):
-            content = content.replace("```", "", 1).rsplit("```", 1)[0].strip()
-
-        data = json.loads(content)
+        data = _json_array(content)
         cards = []
         for idx, item in enumerate(data):
             cards.append({
@@ -1295,6 +1315,7 @@ def generate_flashcards(req: FlashcardsRequest, workspace: Optional[str] = Depen
         return {"flashcards": cards, "total": len(cards)}
     except Exception as e:
         # Fallback heuristic flashcards if LLM JSON format fails
+        _error_log.warning("Flashcards fell back to note excerpts: %s", e)
         cards = []
         for idx, chunk in enumerate(chunks[:req.count]):
             source = chunk.get("metadata", {}).get("source", "Course Material")
@@ -1393,6 +1414,16 @@ _FRONTEND_DIR = Path(os.getenv("FRONTEND_DIR", "./frontend/out"))
 
 
 _sample_state: Dict[str, Optional[str]] = {"error": None}
+
+
+@app.on_event("startup")
+def _start_math_verifier() -> None:
+    _math_verifier.start()
+
+
+@app.on_event("shutdown")
+def _stop_math_verifier() -> None:
+    _math_verifier.close()
 
 
 @app.on_event("startup")
