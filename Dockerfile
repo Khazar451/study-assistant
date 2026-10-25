@@ -33,6 +33,9 @@ ENV PORT=7860 \
     ULTRA_MAX_PER_HOUR=20 \
     MAX_UPLOAD_MB=50 \
     AUTO_INGEST_SAMPLE=true \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    # Fewer glibc malloc arenas: the threaded ingest/retrieval code otherwise holds ~60 MB of freed
+    # memory, which pushed a full textbook upload past the 512 MB free-tier limit (measured locally).
+    MALLOC_ARENA_MAX=2
 EXPOSE 7860
 CMD ["python", "app.py"]

@@ -36,4 +36,6 @@ frontend/node_modules/
 data/
 .logs/
 *.log
-
+
+# Browser test output (screenshots, page snapshots)
+.playwright-mcp/
