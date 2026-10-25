@@ -23,7 +23,7 @@
 - **Live demo:** [study-assistant-hfmk.onrender.com](https://study-assistant-hfmk.onrender.com). No sign-up. Notes on Kepler's laws are preloaded, so you can ask right away, or upload your own PDF, PPTX or text file (up to 50 MB). Each browser gets a private workspace: your chats, uploads and search results are not shared with other visitors. Limit: 20 questions per minute per visitor. The first page load can take about a minute if the free instance was asleep.
 - **Track:** Best Apps and Agents. Also eligible for Best Use of Tavily.
 - **Required runtime:** Chat completions go to **Nebius Token Factory** (`https://api.tokenfactory.nebius.com/v1/`). Answers use NVIDIA **Nemotron 3 Super** (`nvidia/nemotron-3-super-120b-a12b`); derivations, proofs and calculations are escalated to **Nemotron 3 Ultra** (`nvidia/Nemotron-3-Ultra-550b-a55b`) with automatic fallback to Super. Query rewrite, rerank and flashcards use NVIDIA **Nemotron 3 Nano** (`nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B`) with thinking turned off. Embeddings stay on NVIDIA NIM (`nvidia/llama-nemotron-embed-vl-1b-v2`).
-- **5-minute run:** copy `.env.example` to `.env.local`, set `NEBIUS_API_KEY`, `NVIDIA_API_KEY`, and `TAVILY_API_KEY`, then `bin/study-assistant`. Open the printed frontend URL. Under **Notes**, load a PDF (up to 200 MB). Ask a question with the source switch on **Notes**, **Web**, or **Both**. A cited page is drawn under the answer. Ask for a plot and a comparison and the reply includes a rendered graph and a markdown table.
+- **5-minute run (Linux/macOS; on Windows use WSL or Git Bash):** install the Python packages (section 6.1), copy `.env.example` to `.env.local`, set `NEBIUS_API_KEY`, `NVIDIA_API_KEY`, and `TAVILY_API_KEY`, then `bin/study-assistant`. The first run also installs the frontend's npm packages (about a minute). Open the printed frontend URL. Under **Notes**, load a PDF (up to 200 MB). Ask a question with the source switch on **Notes**, **Web**, or **Both**. A cited page is drawn under the answer. Ask for a plot and a comparison and the reply includes a rendered graph and a markdown table.
 - **What makes it different:** math in answers is **checked with SymPy** and shown with a "verified" card (the model is not just trusted); every citation renders the **actual source page**; the student chooses **Notes / Web / Both** so grounding is explicit; chat history persists across sessions.
 - **Built during the submission window (opened 26 Aug 2026):** this repository's first commit is 17 Sep 2026, so the whole project is new work. Grounded RAG tutor, Token Factory Nemotron routing (Super, Nano, Ultra), Tavily academic search, numbered citations, KaTeX formulas, SymPy verification, cited-page images, 2D/3D plots, persistent chat memory, PPTX and slide-image ingestion, flashcards, Next.js + FastAPI UI, tests and CI.
 - **How Token Factory helped:** the stock `openai` client works against Token Factory with only a base URL and key change, so moving from NVIDIA NIM touched one function (`src/providers.py`). One key serves Nano, Super and Ultra, which is what lets the app route each pipeline stage to a different Nemotron size.
@@ -431,11 +431,11 @@ git clone https://github.com/Khazar451/study-assistant.git
 cd study-assistant
 
 # Create and activate a virtual environment
-python -m venv .venv
-
-# On Linux/macOS:
+# On Linux/macOS (recent systems have python3 but no "python" command):
+python3 -m venv .venv
 source .venv/bin/activate
 # On Windows (PowerShell):
+py -3.11 -m venv .venv
 .venv\Scripts\Activate.ps1
 
 # Install requirements
@@ -519,7 +519,7 @@ print(response["sources"])
 
 ### 6.5 Running the Web Application
 
-The usual launch starts the API and the Next.js app together and opens the browser:
+The usual launch starts the API and the Next.js app together and opens the browser. It is a bash script: on Windows, run it from WSL or Git Bash, or start the two processes yourself as shown below. On the first run it installs the frontend's npm packages (`npm ci`).
 
 ```bash
 bin/study-assistant
@@ -531,7 +531,7 @@ To run the two processes yourself:
 
 ```bash
 python -m uvicorn src.api.server:app --port 8000 --reload
-cd frontend && npm run dev
+cd frontend && npm ci && npm run dev   # npm ci is only needed the first time
 ```
 
 ### 6.6 Running the Test Suite
