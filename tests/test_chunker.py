@@ -43,3 +43,19 @@ def test_chunk_overlap_preserves_context():
 
     assert len(chunks) >= 2
     assert len(chunks[1].page_content) > 0
+
+def test_chunk_documents_drops_lone_surrogates_from_pdf_math():
+    from langchain_core.documents import Document
+    from src.ingestion.chunker import chunk_documents
+
+    # PyPDF extraction of math italic letters can leave unpaired surrogate halves.
+    broken = "Let \ud835 x be the input\x00 and y = wx + b."
+    chunks = chunk_documents([Document(page_content=broken, metadata={"page": 1, "slide_title": "\u2022\ud835 (i) input"})])
+
+    text = " ".join(c.page_content for c in chunks)
+    text.encode("utf-8")  # must not raise
+    assert "\ud835" not in text and "\x00" not in text
+    assert "y = wx + b." in text
+    for c in chunks:
+        c.metadata["slide_title"].encode("utf-8")  # titles come from page text and must be clean too
+        assert c.metadata["page"] == 1

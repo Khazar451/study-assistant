@@ -1,0 +1,44 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - complementary [ref=e3]:
+      - generic [ref=e8]:
+        - heading "Study Assistant" [level=1] [ref=e9]
+        - text: Notes and tutoring
+      - navigation [ref=e10]:
+        - button "Tutor" [ref=e11] [cursor=pointer]
+        - button "Notes" [ref=e16] [cursor=pointer]
+        - button "Recall" [ref=e22] [cursor=pointer]
+      - generic [ref=e27]:
+        - button "New Chat" [ref=e28] [cursor=pointer]
+        - generic [ref=e31]: Conversations
+        - generic [ref=e33]: No saved chats
+      - generic [ref=e35]: Page citations need notes
+    - main [ref=e37]:
+      - generic [ref=e38]:
+        - heading "Tutor" [level=2] [ref=e40]
+        - generic [ref=e41]:
+          - button "New Chat" [ref=e42] [cursor=pointer]
+          - button "Light Mode" [ref=e45] [cursor=pointer]
+      - generic [ref=e54]:
+        - generic [ref=e56]:
+          - paragraph [ref=e57]: Study session
+          - heading "What do you want to understand?" [level=2] [ref=e58]
+          - paragraph [ref=e59]: The tutor teaches from your notes and names the page. If a fact is not in those notes, it says so instead of citing a random webpage.
+          - generic [ref=e60]:
+            - button "Add notes" [ref=e61] [cursor=pointer]
+            - button "Make recall cards" [ref=e62] [cursor=pointer]
+          - generic [ref=e63]:
+            - button "Explain Kepler's first law" [ref=e64] [cursor=pointer]
+            - button "Walk through the third law" [ref=e65] [cursor=pointer]
+            - button "Contrast perihelion and aphelion" [ref=e66] [cursor=pointer]
+            - button "Look up the Kepler mission on the academic web" [ref=e67] [cursor=pointer]
+        - generic [ref=e68]:
+          - textbox "Ask about your notes" [ref=e69]
+          - generic [ref=e70]:
+            - group "Where to search" [ref=e71]:
+              - button "Notes" [ref=e72] [cursor=pointer]
+              - button "Web" [ref=e73] [cursor=pointer]
+              - button "Both" [ref=e74] [cursor=pointer]
+            - button "Broader wording" [ref=e76] [cursor=pointer]
+            - button "Ask" [disabled] [ref=e77]
+  - alert [ref=e78]
