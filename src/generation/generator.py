@@ -136,9 +136,13 @@ class StudyGenerator:
                 self.reasoning_model = reasoning.model
         self.last_model = self.model
 
+        # The SDK default (600 s, 2 retries) would hold a stalled request for up to half an hour;
+        # 120 s still leaves room for a long non-streamed Ultra answer.
         self.client = client or OpenAI(
             api_key=self.api_key,
             base_url=self.base_url,
+            timeout=120.0,
+            max_retries=1,
         )
 
     def prepare_context(self, context: Union[str, List[Dict[str, Any]]]) -> str:
@@ -198,16 +202,38 @@ class StudyGenerator:
         if stream:
             kwargs["stream"] = True
         if self.reasoning_model and providers.needs_deep_reasoning(query):
-            try:
-                response = self.client.chat.completions.create(
-                    model=self.reasoning_model, max_tokens=max(self.max_tokens, 4000), **kwargs
-                )
-                self.last_model = self.reasoning_model
-                return response
-            except Exception as exc:  # model unavailable / rate limited: fall back to the answer model
-                logger.warning("Reasoning model %s failed (%s); using %s", self.reasoning_model, exc, self.model)
+            if not providers.reserve_reasoning_call():
+                logger.info("Hourly cap for %s reached; using %s", self.reasoning_model, self.model)
+            else:
+                try:
+                    response = self.client.chat.completions.create(
+                        model=self.reasoning_model, max_tokens=max(self.max_tokens, 4000), **kwargs
+                    )
+                    self.last_model = self.reasoning_model
+                    return response
+                except Exception as exc:  # model unavailable / rate limited: fall back to the answer model
+                    logger.warning("Reasoning model %s failed (%s); using %s", self.reasoning_model, exc, self.model)
         self.last_model = self.model
         return self.client.chat.completions.create(model=self.model, max_tokens=self.max_tokens, **kwargs)
+
+    def complete_text(self, system_prompt: str, user_prompt: str, max_tokens: int = 1500) -> str:
+        """One short non-streaming completion for structured helper output (e.g. flashcards JSON).
+
+        Uses the provider's fast model with thinking off when one is configured (Nemotron Nano on
+        Token Factory), so reasoning cannot consume the token budget; any <think> block is stripped.
+        """
+        fast = providers.resolve_llm_provider("fast")
+        same_provider = fast is not None and fast.name == self.provider
+        model = fast.model if same_provider else self.model
+        extra = {"extra_body": fast.extra_body} if same_provider and fast.extra_body else {}
+        response = self.client.chat.completions.create(
+            model=model,
+            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+            temperature=0.2,
+            max_tokens=max_tokens,
+            **extra,
+        )
+        return providers.strip_reasoning(response.choices[0].message.content or "")
 
     def generate(
         self,

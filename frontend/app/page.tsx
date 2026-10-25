@@ -178,6 +178,23 @@ function linkCitations(text: string): string {
     .join("");
 }
 
+// Must match MAX_QUERY_CHARS in src/api/server.py.
+const MAX_QUERY_CHARS = 2000;
+
+// Turns a refused request (rate limit, busy or paused demo, oversized question) into a sentence for the student.
+async function refusalMessage(res: Response): Promise<string | null> {
+  if (![422, 429, 503].includes(res.status)) return null;
+  try {
+    const data = await res.json();
+    if (typeof data?.detail === "string") return data.detail;
+  } catch {
+    // Not JSON: use the generic wording below.
+  }
+  return res.status === 422
+    ? `Your question is too long. Please keep it under ${MAX_QUERY_CHARS.toLocaleString()} characters.`
+    : "The demo is busy right now. Please try again in a minute.";
+}
+
 
 // --- Clean SVG Icons (Zero Emojis) ---
 
@@ -675,6 +692,8 @@ export default function StudyAssistantApp() {
   const [flippedCards, setFlippedCards] = useState<{ [id: string]: boolean }>({});
   const [cardScores, setCardScores] = useState<{ [id: string]: "review" | "mastered" }>({});
   const [isGeneratingCards, setIsGeneratingCards] = useState(false);
+  // True when the server could not get AI-written cards and returned excerpts from the notes instead.
+  const [cardsFromExcerpts, setCardsFromExcerpts] = useState(false);
   const [flashcardTopic, setFlashcardTopic] = useState("");
 
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -927,6 +946,16 @@ export default function StudyAssistantApp() {
       const url = `/api/ask/stream?query=${encodeURIComponent(q)}&top_k=${topK}&top_n=${topN}&augment_mode=${augmentMode}&source_mode=${mode}&use_web=false&fallback_to_web=false${sessParam}`;
       const response = await fetch(url, { signal: controller.signal });
 
+      // A refusal is an answer, not a broken connection: show it and skip the POST fallback,
+      // which would only be refused again.
+      const refusal = response.ok ? null : await refusalMessage(response);
+      if (refusal) {
+        setMessages((prev) =>
+          prev.map((msg) => (msg.id === tutorMsgId ? { ...msg, text: refusal } : msg))
+        );
+        return;
+      }
+
       if (!response.ok || !response.body) {
         throw new Error("Streaming connection failed.");
       }
@@ -955,6 +984,9 @@ export default function StudyAssistantApp() {
                     msg.id === tutorMsgId ? { ...msg, text: streamedAnswer } : msg
                   )
                 );
+              } else if (event.type === "error") {
+                // The server sends a short, safe message with a reference ID; show it as the reply.
+                streamedAnswer = event.error || "Something went wrong. Please try again.";
               } else if (event.type === "chunks") {
                 finalChunks = event.chunks || [];
               } else if (event.type === "done") {
@@ -1041,7 +1073,7 @@ export default function StudyAssistantApp() {
             msg.id === tutorMsgId
               ? {
                   ...msg,
-                  text: data.answer || "Could not retrieve answer.",
+                  text: data.answer || (typeof data.detail === "string" ? data.detail : "Could not retrieve answer."),
                   sources: data.sources || [],
                   chunks: data.chunks || [],
                   durationMs: data.duration_ms,
@@ -1243,6 +1275,7 @@ export default function StudyAssistantApp() {
       const data = await res.json();
       if (res.ok && data.flashcards) {
         setFlashcards(data.flashcards);
+        setCardsFromExcerpts(Boolean(data.fallback));
         setFlippedCards({});
       } else {
         alert(data.detail || "Unable to generate flashcards. Please ingest documents first.");
@@ -1679,9 +1712,15 @@ export default function StudyAssistantApp() {
                     }
                   }}
                   rows={2}
+                  maxLength={MAX_QUERY_CHARS}
                   disabled={isGenerating}
                   id="chat-input"
                 />
+                {inputQuery.length > MAX_QUERY_CHARS * 0.9 && (
+                  <div className="composer-count" aria-live="polite">
+                    {inputQuery.length.toLocaleString()} / {MAX_QUERY_CHARS.toLocaleString()} characters
+                  </div>
+                )}
                 <div className="composer-bar">
                   <div className="source-switch" role="group" aria-label="Where to search">
                     {(["notes", "web", "both"] as const).map((mode) => (
@@ -1955,6 +1994,12 @@ export default function StudyAssistantApp() {
                 </p>
               </div>
             ) : (
+              <>
+              {cardsFromExcerpts && (
+                <p role="status" style={{ marginTop: "16px", color: "var(--text-muted)", fontSize: "13px" }}>
+                  AI flashcards are unavailable right now, so these cards show excerpts from your notes instead.
+                </p>
+              )}
               <div className="cards-grid" style={{ marginTop: "20px" }}>
                 {flashcards.map((card) => {
                   const isFlipped = flippedCards[card.id];
@@ -2015,6 +2060,7 @@ export default function StudyAssistantApp() {
                   );
                 })}
               </div>
+              </>
             )}
           </div>
         )}

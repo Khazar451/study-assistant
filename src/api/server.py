@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 import hmac
 import json
 import logging
 import os
 from pathlib import Path
 import re
+import secrets
 import threading
 import time
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Deque, Dict, Iterator, List, Optional
 import uuid
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, Query, Request, Response, UploadFile
@@ -20,11 +23,12 @@ from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, ge
 
 from src.assistant import StudyAssistant
 from src.generation.plots import embed_plots, ensure_requested_plot
-from src.ingestion.page_images import attach_page_images, is_library_file, render_pdf_page
+from src.ingestion.page_images import attach_page_images, render_pdf_page
+from src.ingestion.sample_index import SAMPLE_PATH, load_embedding_cache
 from src.generation.tutor_format import allowed_source_keys, bind_numbered_citations, infer_grounding, polish_tutor_answer
 from src import providers
 from src.providers import PROVIDER_LABELS
-from src.verification.symbolic_verifier import verify_math_solution
+from src.verification.time_limited import TimeLimitedVerifier
 
 # Load environment configuration
 load_dotenv(".env.local")
@@ -37,62 +41,189 @@ app = FastAPI(
 )
 
 # --- Deployment hardening (all optional; local development stays open) ---
-# CORS_ORIGINS: comma-separated allowed origins ("*" by default for local dev).
+# CORS_ORIGINS: comma-separated origins allowed to call the API from another site ("*" for any). Unset = none:
+#   the UI itself is same-origin (FastAPI serves it, or Next proxies /api in development).
 # DEMO_MODE=true: the public demo cannot wipe the shared index unless ADMIN_TOKEN matches.
 # ADMIN_TOKEN: when set, destructive endpoints require the X-Admin-Token header.
 # RATE_LIMIT_PER_MIN: per-client cap on the endpoints that spend LLM credits (0 disables).
+# TRUSTED_PROXY_HOPS: proxies in front of the app that append to X-Forwarded-For (0 = use the socket peer).
+# DEMO_MAX_PER_MIN / DEMO_MAX_PER_DAY: caps on those endpoints across all visitors together (0 disables).
+# DEMO_PAUSED=true: those endpoints return 503, so credits stop being spent at once.
+# WORKSPACE_ISOLATION: give each browser its own chats (defaults to DEMO_MODE; local development stays shared).
 # MAX_UPLOAD_MB: upload size cap (default 200).
-_cors_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",") if o.strip()] or ["*"]
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_cors_origins,
-    allow_credentials="*" not in _cors_origins,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+_cors_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
+if _cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_credentials="*" not in _cors_origins,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
-_RATE_LIMITED_PATHS = {"/api/ask", "/api/ask/stream", "/api/search", "/api/flashcards", "/api/ingest/file"}
+_RATE_LIMITED_PATHS = {
+    "/api/ask",
+    "/api/ask/stream",
+    "/api/search",
+    "/api/flashcards",
+    "/api/ingest/file",
+    "/api/ingest/sample",
+}
+_MAX_RATE_KEYS = 10_000
 _rate_hits: Dict[str, List[float]] = {}
+_global_hits: Deque[float] = deque()
 _rate_lock = threading.Lock()
 
 
+def _env_flag(name: str) -> bool:
+    return os.getenv(name, "false").strip().lower() in {"1", "true", "yes"}
+
+
+def _env_int(name: str, default: int = 0) -> int:
+    try:
+        return max(0, int(os.getenv(name, str(default))))
+    except ValueError:
+        return default
+
+
 def _demo_mode() -> bool:
-    return os.getenv("DEMO_MODE", "false").strip().lower() in {"1", "true", "yes"}
+    return _env_flag("DEMO_MODE")
 
 
 def _rate_limit_per_min() -> int:
-    try:
-        return max(0, int(os.getenv("RATE_LIMIT_PER_MIN", "0")))
-    except ValueError:
-        return 0
+    return _env_int("RATE_LIMIT_PER_MIN")
 
 
 def _client_key(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for", "")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+    """Client address for rate limiting.
+
+    Only entries appended by our own proxies are trusted, counted from the right end of
+    X-Forwarded-For; anything a client sends in that header sits further left and is ignored.
+    """
+    peer = request.client.host if request.client else "unknown"
+    hops = _env_int("TRUSTED_PROXY_HOPS")
+    if hops:
+        forwarded = [part.strip() for part in request.headers.get("x-forwarded-for", "").split(",") if part.strip()]
+        if len(forwarded) >= hops:
+            return forwarded[-hops]
+    return peer
+
+
+def _refusal(status_code: int, detail: str, retry_after: float) -> JSONResponse:
+    retry = max(1, int(retry_after) + 1)
+    return JSONResponse(status_code=status_code, content={"detail": detail}, headers={"Retry-After": str(retry)})
+
+
+def _prune_rate_keys(now: float) -> None:
+    """Keep the per-client table bounded even when callers rotate addresses."""
+    for key in [k for k, hits in _rate_hits.items() if not hits or now - hits[-1] >= 60]:
+        del _rate_hits[key]
+    if len(_rate_hits) > _MAX_RATE_KEYS:
+        by_last_hit = sorted(_rate_hits, key=lambda k: _rate_hits[k][-1])
+        for key in by_last_hit[: len(_rate_hits) - _MAX_RATE_KEYS]:
+            del _rate_hits[key]
+
+
+def _check_spend_limits(key: str, now: float) -> Optional[JSONResponse]:
+    """Apply the per-client and the global caps; a refused request does not count against either."""
+    per_client = _rate_limit_per_min()
+    per_min = _env_int("DEMO_MAX_PER_MIN")
+    per_day = _env_int("DEMO_MAX_PER_DAY")
+    with _rate_lock:
+        hits = [t for t in _rate_hits.get(key, []) if now - t < 60]
+        if per_client and len(hits) >= per_client:
+            _rate_hits[key] = hits
+            wait = 60 - (now - hits[0])
+            return _refusal(429, f"Rate limit reached ({per_client}/min). Try again in {int(wait) + 1}s.", wait)
+
+        while _global_hits and now - _global_hits[0] >= 86_400:
+            _global_hits.popleft()
+        if per_day and len(_global_hits) >= per_day:
+            wait = 86_400 - (now - _global_hits[0])
+            return _refusal(503, f"The demo reached its daily question limit. It reopens in about {int(wait // 3600) + 1} h.", wait)
+        last_minute = [t for t in _global_hits if now - t < 60]
+        if per_min and len(last_minute) >= per_min:
+            wait = 60 - (now - last_minute[0])
+            return _refusal(503, f"The demo is busy right now. Try again in {int(wait) + 1}s.", wait)
+
+        if per_client:
+            hits.append(now)
+            _rate_hits[key] = hits
+            if len(_rate_hits) > _MAX_RATE_KEYS:
+                _prune_rate_keys(now)
+        if per_min or per_day:
+            _global_hits.append(now)
+    return None
 
 
 @app.middleware("http")
 async def rate_limit_llm_endpoints(request: Request, call_next):
-    limit = _rate_limit_per_min()
-    if limit and request.url.path in _RATE_LIMITED_PATHS and request.method != "OPTIONS":
-        now = time.time()
-        key = _client_key(request)
-        with _rate_lock:
-            hits = [t for t in _rate_hits.get(key, []) if now - t < 60]
-            if len(hits) >= limit:
-                _rate_hits[key] = hits
-                retry = int(60 - (now - hits[0])) + 1
-                return JSONResponse(
-                    status_code=429,
-                    content={"detail": f"Rate limit reached ({limit}/min). Try again in {retry}s."},
-                    headers={"Retry-After": str(retry)},
-                )
-            hits.append(now)
-            _rate_hits[key] = hits
+    if request.url.path in _RATE_LIMITED_PATHS and request.method != "OPTIONS":
+        if _env_flag("DEMO_PAUSED"):
+            return JSONResponse(status_code=503, content={"detail": "The demo is paused right now. Please try again later."})
+        refusal = _check_spend_limits(_client_key(request), time.time())
+        if refusal is not None:
+            return refusal
     return await call_next(request)
+
+
+WORKSPACE_COOKIE = "sa_workspace"
+_WORKSPACE_RE = re.compile(r"[0-9a-f]{32}")
+
+
+def _workspace_isolation() -> bool:
+    if os.getenv("WORKSPACE_ISOLATION") is not None:
+        return _env_flag("WORKSPACE_ISOLATION")
+    return _demo_mode()
+
+
+@app.middleware("http")
+async def assign_workspace(request: Request, call_next):
+    """Give each browser an unguessable workspace ID in a cookie when isolation is on.
+
+    A cookie (not a header) because citations open files and page images through plain links,
+    which cannot carry custom headers.
+    """
+    if not _workspace_isolation():
+        request.state.workspace = None
+        return await call_next(request)
+    current = request.cookies.get(WORKSPACE_COOKIE, "")
+    is_new = not _WORKSPACE_RE.fullmatch(current)
+    request.state.workspace = secrets.token_hex(16) if is_new else current
+    response = await call_next(request)
+    if is_new:
+        response.set_cookie(
+            WORKSPACE_COOKIE,
+            request.state.workspace,
+            max_age=30 * 24 * 3600,
+            httponly=True,
+            samesite="lax",
+            secure=request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https",
+        )
+    return response
+
+
+def current_workspace(request: Request) -> Optional[str]:
+    """The caller's workspace ID, or None when every visitor shares one library (local development)."""
+    return getattr(request.state, "workspace", None)
+
+
+def _claim_session(session_id: Optional[str], workspace: Optional[str]) -> None:
+    """Make sure a client-supplied session ID is the caller's own before it is read or written.
+
+    An unknown ID is created for the caller; one owned by another workspace answers 404, the same
+    as a session that does not exist, so IDs cannot be probed.
+    """
+    if not session_id or workspace is None:
+        return
+    from src.memory.session_store import get_session_store
+
+    store = get_session_store()
+    exists, owner = store.session_owner(session_id)
+    if not exists:
+        store.create_session(session_id=session_id, workspace=workspace)
+    elif owner != workspace:
+        raise HTTPException(status_code=404, detail="Session not found")
 
 
 def require_admin(x_admin_token: Optional[str] = Header(None)) -> None:
@@ -103,6 +234,7 @@ def require_admin(x_admin_token: Optional[str] = Header(None)) -> None:
             raise HTTPException(status_code=403, detail="Admin token required.")
     elif _demo_mode():
         raise HTTPException(status_code=403, detail="Disabled in the public demo.")
+
 
 
 # --- Prometheus Metrics Definitions ---
@@ -125,6 +257,24 @@ RAG_QUERIES_TOTAL = Counter(
     "Total student academic queries processed",
     ["mode", "use_web"],
 )
+
+_error_log = logging.getLogger("study.errors")
+
+
+def _internal_error(action: str, exc: BaseException) -> str:
+    """Log an unexpected failure in full and return a message that is safe to show visitors.
+
+    Exception text can carry upstream API responses, file paths or library internals, so it stays in
+    the server log; the short reference ties the visitor's message to that log line.
+    """
+    ref = secrets.token_hex(3)
+    _error_log.error("%s failed (ref %s)", action, ref, exc_info=exc)
+    return f"{action} failed (ref {ref}). Please try again."
+
+
+# SymPy checks of generated math run in a helper process with a time limit (VERIFY_TIMEOUT_S, default 3 s);
+# a check that runs over is skipped, so a runaway expression cannot pin a CPU core.
+_math_verifier = TimeLimitedVerifier(timeout=float(os.getenv("VERIFY_TIMEOUT_S", "3")))
 
 # Global singleton instance (guarded: the startup sample-ingest thread and the first request can race)
 _assistant_instance: Optional[StudyAssistant] = None
@@ -206,10 +356,11 @@ class OfflineFallbackReranker:
         self.mode = mode
 
     def rerank(self, query: str, chunks: List[Dict[str, Any]], top_n: int = 5, min_score: Optional[float] = None) -> List[Dict[str, Any]]:
-        sorted_chunks = sorted(chunks, key=lambda c: c.get("similarity", 1.0), reverse=True)
+        # The retriever reports cosine similarity as "similarity_score".
+        sorted_chunks = sorted(chunks, key=lambda c: c.get("similarity_score", 0.0), reverse=True)
         for i, c in enumerate(sorted_chunks):
             if "rerank_score" not in c:
-                c["rerank_score"] = c.get("similarity", 1.0 - (i * 0.05))
+                c["rerank_score"] = c.get("similarity_score", 1.0 - (i * 0.05))
         return sorted_chunks[:top_n]
 
 
@@ -257,9 +408,12 @@ def set_assistant(assistant: StudyAssistant) -> None:
 
 # --- Pydantic Request / Response Models ---
 
+# Questions reach several paid model calls, so their size is capped (the UI enforces the same limit).
+MAX_QUERY_CHARS = 2000
+
 
 class AskRequest(BaseModel):
-    query: str = Field(..., description="Student's academic question")
+    query: str = Field(..., max_length=MAX_QUERY_CHARS, description="Student's academic question")
     top_k: int = Field(15, ge=1, le=50, description="Initial vector candidates")
     top_n: int = Field(5, ge=1, le=20, description="Reranked context chunks")
     augment: bool = Field(True, description="Enable query intelligence (rewrite/expand/HyDE)")
@@ -273,7 +427,7 @@ class AskRequest(BaseModel):
 
 
 class CreateSessionRequest(BaseModel):
-    title: Optional[str] = Field("New Chat", description="Title of the conversation session")
+    title: Optional[str] = Field("New Chat", max_length=120, description="Title of the conversation session")
     session_id: Optional[str] = Field(None, description="Optional custom session ID")
 
 
@@ -282,7 +436,7 @@ class RenameSessionRequest(BaseModel):
 
 
 class SearchRequest(BaseModel):
-    query: str = Field(..., description="Search query")
+    query: str = Field(..., max_length=MAX_QUERY_CHARS, description="Search query")
     top_k: int = Field(15, ge=1, le=50)
     top_n: int = Field(5, ge=1, le=20)
     augment: bool = Field(True)
@@ -305,16 +459,20 @@ class FlashcardItem(BaseModel):
 
 
 class FlashcardsRequest(BaseModel):
-    topic: Optional[str] = Field(None, description="Optional focus topic")
+    topic: Optional[str] = Field(None, max_length=200, description="Optional focus topic")
     count: int = Field(4, ge=1, le=10, description="Number of flashcards to generate")
 
 
 # --- API Routes ---
 
 
-@app.get("/metrics")
+@app.get("/metrics", dependencies=[Depends(require_admin)])
 def get_metrics() -> Response:
-    """Prometheus exposition endpoint for system and RAG observability."""
+    """Prometheus exposition endpoint for system and RAG observability.
+
+    Guarded like the other operator endpoints: open locally, X-Admin-Token when ADMIN_TOKEN is set,
+    and closed in the public demo without one.
+    """
     try:
         assistant = get_assistant()
         RAG_INDEXED_CHUNKS.set(assistant.count())
@@ -345,6 +503,9 @@ def get_status() -> Dict[str, Any]:
         "tavily_configured": bool(os.getenv("TAVILY_API_KEY")),
         "tavily_available": tavily_available,
         "indexed_chunks": chunk_count,
+        # Whether the bundled sample can be searched, and why startup indexing failed if it cannot.
+        "sample_ready": _is_indexed(assistant, SAMPLE_PATH.resolve()),
+        "sample_error": _sample_state["error"],
         "persist_directory": assistant.persist_directory,
         "generation_model": _str_attr(generator, "model"),
         "augment_model": _str_attr(augmenter, "model"),
@@ -380,6 +541,7 @@ def _retrieve_for_mode(
     top_n: int,
     augment: bool,
     augment_mode: str,
+    workspace: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     tavily = getattr(assistant, "tavily", None)
     web_ok = bool(tavily and getattr(tavily, "is_available", False))
@@ -399,8 +561,15 @@ def _retrieve_for_mode(
         augment=augment,
         augment_mode=augment_mode,
         use_web=mode == "both" and web_ok,
+        **_where_kwargs(workspace),
     )
     return chunks
+
+
+def _where_kwargs(workspace: Optional[str]) -> Dict[str, Any]:
+    """`where=` for assistant calls when the caller is limited to a workspace; nothing otherwise."""
+    where = _workspace_filter(workspace)
+    return {"where": where} if where else {}
 
 
 def _empty_retrieval_notice(mode: str) -> str:
@@ -470,7 +639,7 @@ def _finalize_answer(
         attach_page_images(references, answer)
     answer = ensure_requested_plot(query, embed_plots(answer))
     sources = [ref["label"] for ref in references]
-    verification = verify_math_solution(answer)
+    verification = _math_verifier.verify(answer)
 
     # Persist conversation turn to SQLite session store
     if session_id:
@@ -509,12 +678,13 @@ def _provider_label(generator: Any) -> str:
 
 
 @app.get("/api/documents")
-def get_documents() -> Dict[str, Any]:
-    """Inspect all documents indexed in the persistent ChromaDB collection."""
+def get_documents(workspace: Optional[str] = Depends(current_workspace)) -> Dict[str, Any]:
+    """Inspect the documents the caller can use (their own uploads and the shared sample)."""
     assistant = get_assistant()
     try:
         # ChromaDB collection inspection
-        raw = assistant.indexer.collection.get(include=["metadatas"])
+        where = _workspace_filter(workspace)
+        raw = assistant.indexer.collection.get(include=["metadatas"], **({"where": where} if where else {}))
         metadatas = raw.get("metadatas", []) or []
 
         doc_map: Dict[str, Dict[str, Any]] = {}
@@ -561,18 +731,57 @@ def get_documents() -> Dict[str, Any]:
             "total_chunks": assistant.count(),
             "total_documents": 0,
             "documents": [],
-            "error": str(e),
+            "error": _internal_error("Listing documents", e),
         }
+
+
+# --- Visitor workspaces: whose documents, files and jobs a caller may use ---
+# The bundled sample is indexed into this workspace so every visitor can read it.
+SHARED_WORKSPACE = "shared"
+
+
+def _workspace_filter(workspace: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Chroma filter for the caller's chunks plus the shared sample; None = no limit (local development)."""
+    if workspace is None:
+        return None
+    return {"workspace": {"$in": [workspace, SHARED_WORKSPACE]}}
+
+
+def _upload_dir(workspace: Optional[str]) -> Path:
+    # Workspace IDs are 32 hex characters (checked when the cookie is read), so they are safe as a folder name.
+    root = Path("./data/uploads").resolve()
+    return root / workspace if workspace else root
+
+
+def _in_library(path: Path, workspace: Optional[str]) -> bool:
+    """True for files in the caller's upload folder or the bundled samples."""
+    target = path.resolve()
+    roots = [_upload_dir(workspace), Path("./sample_materials").resolve()]
+    return target.is_file() and any(target == root or root in target.parents for root in roots)
+
+
+def _ingest_kwargs(assistant: Any, workspace: Optional[str], progress_callback: Optional[Any] = None) -> Dict[str, Any]:
+    import inspect
+
+    kwargs: Dict[str, Any] = {}
+    if progress_callback is not None and "progress_callback" in inspect.signature(assistant.ingest).parameters:
+        kwargs["progress_callback"] = progress_callback
+    if workspace is not None:
+        kwargs["metadata"] = {"workspace": workspace}
+    return kwargs
 
 
 # Ingestion Job Tracker
 ingestion_jobs: Dict[str, Dict[str, Any]] = {}
+_job_workspace: Dict[str, Optional[str]] = {}
+# Uploads are indexed one at a time, in arrival order, by a single worker; the lock also covers the
+# synchronous path, so ChromaDB is never written by two uploads at once.
 _ingest_lock = threading.Lock()
-_log = logging.getLogger("study.ingest")
+_ingest_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ingest")
 MAX_UPLOAD_BYTES = int(float(os.getenv("MAX_UPLOAD_MB", "200")) * 1024 * 1024)
 
 
-def _run_ingestion_worker(job_id: str, target_path: Path, filename: str) -> None:
+def _run_ingestion_worker(job_id: str, target_path: Path, filename: str, workspace: Optional[str] = None) -> None:
     """Index one book at a time so ChromaDB is not written by two uploads at once."""
     assistant = get_assistant()
     try:
@@ -585,12 +794,7 @@ def _run_ingestion_worker(job_id: str, target_path: Path, filename: str) -> None
                     ingestion_jobs[job_id]["updated_at"] = time.time()
 
             if hasattr(assistant, "ingest"):
-                import inspect
-                sig = inspect.signature(assistant.ingest)
-                if "progress_callback" in sig.parameters:
-                    result = assistant.ingest(target_path, progress_callback=on_progress)
-                else:
-                    result = assistant.ingest(target_path)
+                result = assistant.ingest(target_path, **_ingest_kwargs(assistant, workspace, on_progress))
             else:
                 result = {"status": "success", "file": filename}
 
@@ -603,22 +807,73 @@ def _run_ingestion_worker(job_id: str, target_path: Path, filename: str) -> None
                     assistant.count() if hasattr(assistant, "count") else 0
                 )
     except Exception as e:
-        _log.exception("Ingestion failed for %s", filename)
+        message = _internal_error(f"Indexing {filename}", e)
         if job_id in ingestion_jobs:
             ingestion_jobs[job_id]["status"] = "failed"
-            ingestion_jobs[job_id]["error"] = str(e)
+            ingestion_jobs[job_id]["error"] = message
             ingestion_jobs[job_id]["completed_at"] = time.time()
+
+
+# First bytes each binary format starts with, so a renamed file is refused before it is parsed.
+_FILE_SIGNATURES = {
+    ".pptx": b"PK\x03\x04",
+    ".ppt": b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1",
+    ".png": b"\x89PNG\r\n\x1a\n",
+    ".jpg": b"\xff\xd8\xff",
+    ".jpeg": b"\xff\xd8\xff",
+}
+
+
+def _matches_type(ext: str, head: bytes) -> bool:
+    if ext in {".txt", ".md"}:
+        return b"\x00" not in head  # text, not a binary file renamed to .txt
+    if ext == ".pdf":
+        return b"%PDF-" in head[:1024]  # the PDF format allows a few bytes before its header
+    signature = _FILE_SIGNATURES.get(ext)
+    return signature is not None and head.startswith(signature)
+
+
+def _check_upload_quota(workspace: str, upload_dir: Path, name: str) -> None:
+    """Per-visitor limits on the shared demo: uploads in progress and files kept."""
+    max_pending = _env_int("MAX_PENDING_UPLOADS", 3)
+    pending = sum(
+        1 for job_id, job in ingestion_jobs.items()
+        if _job_workspace.get(job_id) == workspace and job.get("status") == "processing"
+    )
+    if max_pending and pending >= max_pending:
+        raise HTTPException(
+            status_code=429,
+            detail=f"You already have {pending} uploads being processed. Please wait for one to finish.",
+        )
+    max_files = _env_int("MAX_FILES_PER_WORKSPACE", 5)
+    kept = [p for p in upload_dir.iterdir() if p.is_file()] if upload_dir.is_dir() else []
+    if max_files and len(kept) >= max_files and not (upload_dir / name).exists():
+        raise HTTPException(
+            status_code=409,
+            detail=f"This demo keeps at most {max_files} files per visitor. Upload a file with the same name to replace it.",
+        )
+
+
+def _ingest_locked(assistant: Any, target_path: Path, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    with _ingest_lock:
+        return assistant.ingest(target_path, **kwargs)
 
 
 async def _save_upload(file: UploadFile, target_path: Path) -> int:
     """Write an upload to disk in chunks so a textbook is not held entirely in memory."""
     size = 0
+    ext = target_path.suffix.lower()
     try:
         with open(target_path, "wb") as handle:
             while True:
                 block = await file.read(1024 * 1024)
                 if not block:
                     break
+                if size == 0 and not _matches_type(ext, block):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"This file's content does not match its {ext} extension. Please upload the original file.",
+                    )
                 size += len(block)
                 if size > MAX_UPLOAD_BYTES:
                     raise HTTPException(
@@ -641,6 +896,7 @@ async def ingest_file(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     background: bool = Query(False),
+    workspace: Optional[str] = Depends(current_workspace),
 ) -> Dict[str, Any]:
     """Upload and ingest a course file (PDF, TXT, MD, PNG, JPG, JPEG) into the vector store.
 
@@ -657,13 +913,16 @@ async def ingest_file(
             detail=f"Unsupported file format '{ext}'. Supported formats: {', '.join(sorted(allowed_exts))}",
         )
 
-    upload_dir = Path("./data/uploads").resolve()
+    upload_dir = _upload_dir(workspace)
     upload_dir.mkdir(parents=True, exist_ok=True)
     safe_name = Path(filename).name
     target_path = upload_dir / safe_name
+    if workspace is not None:
+        _check_upload_quota(workspace, upload_dir, safe_name)
     await _save_upload(file, target_path)
 
     job_id = str(uuid.uuid4())
+    _job_workspace[job_id] = workspace
     ingestion_jobs[job_id] = {
         "job_id": job_id,
         "filename": safe_name,
@@ -680,12 +939,7 @@ async def ingest_file(
     assistant = get_assistant()
 
     if background:
-        threading.Thread(
-            target=_run_ingestion_worker,
-            args=(job_id, target_path, safe_name),
-            name=f"ingest-{job_id[:8]}",
-            daemon=True,
-        ).start()
+        _ingest_executor.submit(_run_ingestion_worker, job_id, target_path, safe_name, workspace)
         return {
             "success": True,
             "job_id": job_id,
@@ -702,12 +956,9 @@ async def ingest_file(
                 ingestion_jobs[job_id]["progress"] = int((processed / total) * 100) if total > 0 else 0
                 ingestion_jobs[job_id]["updated_at"] = time.time()
 
-        import inspect
-        sig = inspect.signature(assistant.ingest)
-        if "progress_callback" in sig.parameters:
-            result = await run_in_threadpool(assistant.ingest, target_path, progress_callback=on_progress)
-        else:
-            result = await run_in_threadpool(assistant.ingest, target_path)
+        result = await run_in_threadpool(
+            _ingest_locked, assistant, target_path, _ingest_kwargs(assistant, workspace, on_progress)
+        )
 
         ingestion_jobs[job_id]["status"] = "completed"
         ingestion_jobs[job_id]["progress"] = 100
@@ -721,37 +972,55 @@ async def ingest_file(
             "total_indexed_chunks": assistant.count() if hasattr(assistant, "count") else 0,
         }
     except Exception as e:
+        message = e.detail if isinstance(e, HTTPException) else _internal_error(f"Indexing {safe_name}", e)
         ingestion_jobs[job_id]["status"] = "failed"
-        ingestion_jobs[job_id]["error"] = str(e)
-        raise HTTPException(status_code=500, detail=f"Ingestion failed: {str(e)}")
+        ingestion_jobs[job_id]["error"] = message
+        if isinstance(e, HTTPException):
+            raise
+        raise HTTPException(status_code=500, detail=message)
 
 
 @app.get("/api/ingest/status/{job_id}")
-def get_ingestion_status(job_id: str) -> Dict[str, Any]:
+def get_ingestion_status(job_id: str, workspace: Optional[str] = Depends(current_workspace)) -> Dict[str, Any]:
     """Retrieve real-time progress and completion status for an ingestion job."""
-    if job_id not in ingestion_jobs:
+    if job_id not in ingestion_jobs or _job_workspace.get(job_id) != workspace:
         raise HTTPException(status_code=404, detail=f"Ingestion job '{job_id}' not found.")
     return ingestion_jobs[job_id]
 
 
 @app.get("/api/ingest/jobs")
-def list_ingestion_jobs() -> Dict[str, Any]:
-    """List recent ingestion jobs."""
-    return {"jobs": list(ingestion_jobs.values())[-25:]}
+def list_ingestion_jobs(workspace: Optional[str] = Depends(current_workspace)) -> Dict[str, Any]:
+    """List the caller's recent ingestion jobs."""
+    mine = [job for job_id, job in ingestion_jobs.items() if _job_workspace.get(job_id) == workspace]
+    return {"jobs": mine[-25:]}
 
 
 @app.post("/api/ingest/sample")
 def ingest_sample() -> Dict[str, Any]:
     """Ingest the bundled Kepler Astronomy sample material for instant testing."""
-    sample_path = Path("./sample_materials/astronomy_kepler.txt").resolve()
+    sample_path = SAMPLE_PATH.resolve()
     if not sample_path.exists():
         raise HTTPException(status_code=404, detail="Sample material file not found.")
 
     assistant = get_assistant()
+    if _is_indexed(assistant, sample_path):
+        # Already in the library: re-embedding it would only spend credits.
+        return {
+            "success": True,
+            "material": "Kepler's Laws of Planetary Motion",
+            "result": {"source": sample_path.name, "status": "already_indexed"},
+            "total_indexed_chunks": assistant.count(),
+        }
+    # Precomputed vectors let a fresh deployment index the sample without calling the embedding API.
+    cache = load_embedding_cache(sample_path, _str_attr(getattr(assistant, "embedder", None), "model") or None)
     try:
-        result = assistant.ingest(sample_path)
+        result = assistant.ingest(
+            sample_path,
+            metadata={"workspace": SHARED_WORKSPACE},
+            **({"embedding_cache": cache} if cache else {}),
+        )
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Ingestion failed: {exc}") from exc
+        raise HTTPException(status_code=500, detail=_internal_error("Indexing the sample", exc)) from exc
     return {
         "success": True,
         "material": "Kepler's Laws of Planetary Motion",
@@ -760,9 +1029,18 @@ def ingest_sample() -> Dict[str, Any]:
     }
 
 
+def _is_indexed(assistant: Any, path: Path) -> bool:
+    try:
+        found = assistant.indexer.collection.get(where={"file_path": str(path)}, limit=1)
+    except Exception:
+        return False
+    return bool(isinstance(found, dict) and found.get("ids"))
+
+
 @app.post("/api/ask")
-def ask_question(req: AskRequest) -> Dict[str, Any]:
+def ask_question(req: AskRequest, workspace: Optional[str] = Depends(current_workspace)) -> Dict[str, Any]:
     """Generate a grounded academic response with verified inline citations."""
+    _claim_session(req.session_id, workspace)
     assistant = get_assistant()
     start_time = time.time()
 
@@ -780,10 +1058,11 @@ def ask_question(req: AskRequest) -> Dict[str, Any]:
         use_web=req.use_web,
         fallback_to_web=req.fallback_to_web,
         session_id=req.session_id,
+        **_where_kwargs(workspace),
     )
 
     duration_ms = round((time.time() - start_time) * 1000, 1)
-    verification = verify_math_solution(res.get("answer", ""))
+    verification = _math_verifier.verify(res.get("answer", ""))
 
     return {
         **res,
@@ -794,7 +1073,7 @@ def ask_question(req: AskRequest) -> Dict[str, Any]:
 
 
 @app.post("/api/search")
-def search_documents(req: SearchRequest) -> Dict[str, Any]:
+def search_documents(req: SearchRequest, workspace: Optional[str] = Depends(current_workspace)) -> Dict[str, Any]:
     """Retrieve and rerank candidate document chunks without LLM synthesis."""
     assistant = get_assistant()
     chunks = assistant.search(
@@ -804,6 +1083,7 @@ def search_documents(req: SearchRequest) -> Dict[str, Any]:
         augment=req.augment,
         augment_mode=req.augment_mode,
         use_web=req.use_web,
+        **_where_kwargs(workspace),
     )
     return {
         "query": req.query,
@@ -821,6 +1101,7 @@ def _history_and_chunks(
     top_n: int,
     augment: bool,
     augment_mode: str,
+    workspace: Optional[str] = None,
 ) -> tuple[List[Dict[str, str]], List[Dict[str, Any]]]:
     """Load chat history, condense a follow-up question, and retrieve chunks (blocking I/O)."""
     from src.memory.session_store import get_session_store
@@ -840,6 +1121,7 @@ def _history_and_chunks(
         top_n=top_n,
         augment=augment,
         augment_mode=augment_mode,
+        workspace=workspace,
     )
     return history, chunks
 
@@ -855,7 +1137,7 @@ def _save_notice_turn(session_id: str, query: str, notice: str, mode: str) -> No
 @app.get("/api/ask/stream")
 async def ask_stream(
     request: Request,
-    query: str = Query(..., description="Student question"),
+    query: str = Query(..., max_length=MAX_QUERY_CHARS, description="Student question"),
     top_k: int = Query(15, ge=1, le=50),
     top_n: int = Query(5, ge=1, le=20),
     augment: bool = Query(True),
@@ -864,8 +1146,11 @@ async def ask_stream(
     fallback_to_web: bool = Query(True),
     source_mode: str = Query("", description="notes, web, or both. Overrides use_web when set."),
     session_id: Optional[str] = Query(None, description="Optional chat session ID for multi-turn conversational memory"),
+    workspace: Optional[str] = Depends(current_workspace),
 ):
     """Server-Sent Events (SSE) token-by-token streaming endpoint for real-time typewriter UI."""
+    # Checked before streaming starts, so a foreign session ID gets a plain 404 instead of an event stream.
+    await run_in_threadpool(_claim_session, session_id, workspace)
     assistant = await run_in_threadpool(get_assistant)
 
     async def event_generator():
@@ -890,6 +1175,7 @@ async def ask_stream(
                 top_n=top_n,
                 augment=augment,
                 augment_mode=augment_mode,
+                workspace=workspace,
             )
             if not chunks:
                 notice = _empty_retrieval_notice(mode)
@@ -907,7 +1193,7 @@ async def ask_stream(
                 {
                     "source": c.get("metadata", {}).get("source", "Unknown"),
                     "page": c.get("metadata", {}).get("page", 1),
-                    "score": c.get("rerank_score", c.get("similarity", 0.0)),
+                    "score": c.get("rerank_score", c.get("similarity_score", 0.0)),
                     "preview": c.get("text", "")[:180] + "...",
                     "source_type": c.get("metadata", {}).get("source_type", "document"),
                 }
@@ -925,7 +1211,7 @@ async def ask_stream(
             ):
                 yield event
         except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'error': _internal_error('Answering', e)})}\n\n"
 
     return StreamingResponse(
         event_generator(),
@@ -939,12 +1225,13 @@ async def ask_stream(
 
 
 @app.get("/api/materials/file")
-def get_material_file(path: str = Query(..., description="Absolute path of an indexed course file")):
+def get_material_file(
+    path: str = Query(..., description="Absolute path of an indexed course file"),
+    workspace: Optional[str] = Depends(current_workspace),
+):
     """Serve a course file so a citation can open the PDF at a page."""
     target = Path(path).resolve()
-    roots = [Path("./data/uploads").resolve(), Path("./sample_materials").resolve()]
-    allowed = target.is_file() and any(target == root or root in target.parents for root in roots)
-    if not allowed:
+    if not _in_library(target, workspace):
         raise HTTPException(status_code=404, detail="File is not in the course library.")
     return FileResponse(target)
 
@@ -953,10 +1240,11 @@ def get_material_file(path: str = Query(..., description="Absolute path of an in
 def get_material_page(
     path: str = Query(..., description="Absolute path of an indexed PDF"),
     page: int = Query(1, ge=1),
+    workspace: Optional[str] = Depends(current_workspace),
 ):
     """Return a JPEG of one cited book page."""
     target = Path(path)
-    if not is_library_file(target):
+    if not _in_library(target, workspace):
         raise HTTPException(status_code=404, detail="File is not in the course library.")
     image = render_pdf_page(str(target), page)
     if image is None:
@@ -975,8 +1263,19 @@ def get_plot(name: str):
     return FileResponse(image, media_type="image/png")
 
 
+def _json_array(content: str) -> List[Dict[str, Any]]:
+    """The JSON array in a model reply, tolerating code fences and text around it."""
+    start, end = content.find("["), content.rfind("]")
+    if start == -1 or end < start:
+        raise ValueError("No JSON array in the model reply")
+    data = json.loads(content[start : end + 1])
+    if not isinstance(data, list) or not all(isinstance(item, dict) for item in data):
+        raise ValueError("The model reply is not a list of cards")
+    return data
+
+
 @app.post("/api/flashcards")
-def generate_flashcards(req: FlashcardsRequest) -> Dict[str, Any]:
+def generate_flashcards(req: FlashcardsRequest, workspace: Optional[str] = Depends(current_workspace)) -> Dict[str, Any]:
     """Generate grounded active-recall flashcards from indexed course materials."""
     assistant = get_assistant()
     if assistant.count() == 0:
@@ -986,7 +1285,7 @@ def generate_flashcards(req: FlashcardsRequest) -> Dict[str, Any]:
         )
 
     topic = req.topic or "core principles and key formulas"
-    chunks = assistant.search(query=topic, top_k=10, top_n=5)
+    chunks = assistant.search(query=topic, top_k=10, top_n=5, **_where_kwargs(workspace))
     context = assistant.retriever.format_context(chunks)
 
     # Prompt structured flashcards
@@ -1003,24 +1302,13 @@ def generate_flashcards(req: FlashcardsRequest) -> Dict[str, Any]:
     )
 
     try:
-        llm_client = assistant.generator.client
-        model = assistant.generator.model
-        resp = llm_client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": "You are a precise academic study assistant that outputs strict JSON."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.2,
+        # Short structured output: the fast model with thinking off, a token budget, reasoning stripped.
+        content = assistant.generator.complete_text(
+            system_prompt="You are a precise academic study assistant that outputs strict JSON.",
+            user_prompt=prompt,
+            max_tokens=1500,
         )
-        content = resp.choices[0].message.content.strip()
-        # Parse JSON
-        if content.startswith("```json"):
-            content = content.replace("```json", "", 1).rsplit("```", 1)[0].strip()
-        elif content.startswith("```"):
-            content = content.replace("```", "", 1).rsplit("```", 1)[0].strip()
-
-        data = json.loads(content)
+        data = _json_array(content)
         cards = []
         for idx, item in enumerate(data):
             cards.append({
@@ -1034,6 +1322,7 @@ def generate_flashcards(req: FlashcardsRequest) -> Dict[str, Any]:
         return {"flashcards": cards, "total": len(cards)}
     except Exception as e:
         # Fallback heuristic flashcards if LLM JSON format fails
+        _error_log.warning("Flashcards fell back to note excerpts: %s", e)
         cards = []
         for idx, chunk in enumerate(chunks[:req.count]):
             source = chunk.get("metadata", {}).get("source", "Course Material")
@@ -1064,27 +1353,33 @@ def clear_database() -> Dict[str, Any]:
 
 
 @app.get("/api/chat/sessions")
-def list_chat_sessions() -> List[Dict[str, Any]]:
-    """List all saved chat sessions ordered by last updated."""
+def list_chat_sessions(workspace: Optional[str] = Depends(current_workspace)) -> List[Dict[str, Any]]:
+    """List the caller's saved chat sessions ordered by last updated."""
     from src.memory.session_store import get_session_store
-    return get_session_store().list_sessions()
+    return get_session_store().list_sessions(workspace=workspace)
 
 
 @app.post("/api/chat/sessions")
-def create_chat_session(req: Optional[CreateSessionRequest] = None) -> Dict[str, Any]:
+def create_chat_session(
+    req: Optional[CreateSessionRequest] = None,
+    workspace: Optional[str] = Depends(current_workspace),
+) -> Dict[str, Any]:
     """Create a new chat session."""
     from src.memory.session_store import get_session_store
+    store = get_session_store()
     title = req.title if req and req.title else "New Chat"
     session_id = req.session_id if req else None
-    return get_session_store().create_session(session_id=session_id, title=title)
+    if session_id and store.session_owner(session_id)[0]:
+        raise HTTPException(status_code=409, detail="That session ID is already in use.")
+    return store.create_session(session_id=session_id, title=title, workspace=workspace)
 
 
 @app.get("/api/chat/sessions/{session_id}")
-def get_chat_session(session_id: str) -> Dict[str, Any]:
+def get_chat_session(session_id: str, workspace: Optional[str] = Depends(current_workspace)) -> Dict[str, Any]:
     """Fetch a chat session and its full message history."""
     from src.memory.session_store import get_session_store
     store = get_session_store()
-    session = store.get_session(session_id)
+    session = store.get_session(session_id, workspace=workspace)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     messages = store.get_session_messages(session_id)
@@ -1095,22 +1390,24 @@ def get_chat_session(session_id: str) -> Dict[str, Any]:
 
 
 @app.patch("/api/chat/sessions/{session_id}")
-def rename_chat_session(session_id: str, req: RenameSessionRequest) -> Dict[str, Any]:
+def rename_chat_session(
+    session_id: str, req: RenameSessionRequest, workspace: Optional[str] = Depends(current_workspace)
+) -> Dict[str, Any]:
     """Rename a chat session title."""
     from src.memory.session_store import get_session_store
     store = get_session_store()
-    success = store.rename_session(session_id, req.title)
+    success = store.rename_session(session_id, req.title, workspace=workspace)
     if not success:
         raise HTTPException(status_code=404, detail="Session not found")
     return {"success": True, "id": session_id, "title": req.title}
 
 
 @app.delete("/api/chat/sessions/{session_id}")
-def delete_chat_session(session_id: str) -> Dict[str, Any]:
+def delete_chat_session(session_id: str, workspace: Optional[str] = Depends(current_workspace)) -> Dict[str, Any]:
     """Delete a chat session and all its messages."""
     from src.memory.session_store import get_session_store
     store = get_session_store()
-    success = store.delete_session(session_id)
+    success = store.delete_session(session_id, workspace=workspace)
     if not success:
         raise HTTPException(status_code=404, detail="Session not found")
     return {"success": True, "id": session_id}
@@ -1123,6 +1420,19 @@ def delete_chat_session(session_id: str) -> Dict[str, Any]:
 _FRONTEND_DIR = Path(os.getenv("FRONTEND_DIR", "./frontend/out"))
 
 
+_sample_state: Dict[str, Optional[str]] = {"error": None}
+
+
+@app.on_event("startup")
+def _start_math_verifier() -> None:
+    _math_verifier.start()
+
+
+@app.on_event("shutdown")
+def _stop_math_verifier() -> None:
+    _math_verifier.close()
+
+
 @app.on_event("startup")
 def _auto_ingest_sample() -> None:
     if os.getenv("AUTO_INGEST_SAMPLE", "false").strip().lower() not in {"1", "true", "yes"}:
@@ -1130,14 +1440,16 @@ def _auto_ingest_sample() -> None:
 
     def worker() -> None:
         log = logging.getLogger(__name__)
-        for attempt in range(1, 4):  # the hosted embedding API stalls now and then; retry
+        for attempt in range(1, 4):  # without the precomputed index this calls the embedding API, which stalls now and then
             try:
-                if get_assistant().count() == 0:
-                    ingest_sample()
+                ingest_sample()  # a no-op when the sample is already indexed
+                _sample_state["error"] = None
                 return
             except Exception as exc:  # best effort: the demo still works without the sample
+                _sample_state["error"] = str(getattr(exc, "detail", exc))
                 log.warning("Sample auto-ingest attempt %d failed: %s", attempt, exc)
                 time.sleep(5 * attempt)
+        log.error("Sample auto-ingest gave up; the library starts empty: %s", _sample_state["error"])
 
     threading.Thread(target=worker, name="auto-ingest-sample", daemon=True).start()
 

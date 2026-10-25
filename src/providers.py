@@ -1,7 +1,10 @@
+from collections import deque
 import os
 import re
+import threading
+import time
 from dataclasses import dataclass
-from typing import Iterable, Iterator, List, Optional
+from typing import Deque, Iterable, Iterator, List, Optional
 
 NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
 NVIDIA_DEFAULT_MODEL = "meta/llama-3.2-11b-vision-instruct"
@@ -159,6 +162,31 @@ _REASONING_QUERY_RE = re.compile(
 def needs_deep_reasoning(query: str) -> bool:
     """Heuristic: route derivations, proofs, and calculations to the heavy reasoning model."""
     return bool(query and _REASONING_QUERY_RE.search(query))
+
+
+_reasoning_calls: Deque[float] = deque()
+_reasoning_lock = threading.Lock()
+
+
+def reserve_reasoning_call() -> bool:
+    """Count one heavy-model call against ULTRA_MAX_PER_HOUR (process-wide; 0 or unset = no cap).
+
+    Returns False once the hour's budget is spent, so the caller answers with the everyday model.
+    """
+    try:
+        limit = max(0, int(os.getenv("ULTRA_MAX_PER_HOUR", "0")))
+    except ValueError:
+        limit = 0
+    if not limit:
+        return True
+    now = time.time()
+    with _reasoning_lock:
+        while _reasoning_calls and now - _reasoning_calls[0] >= 3600:
+            _reasoning_calls.popleft()
+        if len(_reasoning_calls) >= limit:
+            return False
+        _reasoning_calls.append(now)
+        return True
 
 
 def answer_model(generator) -> str:

@@ -59,15 +59,29 @@ class SessionStore:
                 CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions (updated_at DESC);
                 """
             )
+            # Databases created before visitor workspaces existed lack the owner column.
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(sessions)")}
+            if "workspace" not in columns:
+                conn.execute("ALTER TABLE sessions ADD COLUMN workspace TEXT")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_workspace ON sessions (workspace)")
 
-    def create_session(self, session_id: Optional[str] = None, title: str = "New Chat") -> Dict[str, Any]:
+    @staticmethod
+    def _scope(workspace: Optional[str], alias: str = "") -> tuple[str, list[Any]]:
+        """SQL condition limiting sessions to one workspace; None means no limit (single-user mode)."""
+        if workspace is None:
+            return "", []
+        return f" AND {alias}workspace = ?", [workspace]
+
+    def create_session(
+        self, session_id: Optional[str] = None, title: str = "New Chat", workspace: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Create a new chat session."""
         sid = session_id or f"session_{uuid.uuid4().hex[:12]}"
         now = time.time()
         with self._connection() as conn:
             conn.execute(
-                "INSERT INTO sessions (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
-                (sid, title, now, now),
+                "INSERT INTO sessions (id, title, created_at, updated_at, workspace) VALUES (?, ?, ?, ?, ?)",
+                (sid, title, now, now, workspace),
             )
         return {
             "id": sid,
@@ -77,18 +91,21 @@ class SessionStore:
             "message_count": 0,
         }
 
-    def list_sessions(self) -> List[Dict[str, Any]]:
-        """List all chat sessions ordered by most recently updated."""
+    def list_sessions(self, workspace: Optional[str] = None) -> List[Dict[str, Any]]:
+        """List chat sessions (of one workspace, when given) ordered by most recently updated."""
+        condition, params = self._scope(workspace, "s.")
         with self._connection() as conn:
             cursor = conn.execute(
-                """
+                f"""
                 SELECT s.id, s.title, s.created_at, s.updated_at,
                        COUNT(m.id) AS message_count
                 FROM sessions s
                 LEFT JOIN messages m ON s.id = m.session_id
+                WHERE 1 = 1{condition}
                 GROUP BY s.id
                 ORDER BY s.updated_at DESC
-                """
+                """,
+                params,
             )
             rows = cursor.fetchall()
             return [
@@ -102,19 +119,20 @@ class SessionStore:
                 for row in rows
             ]
 
-    def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
-        """Fetch session metadata by ID."""
+    def get_session(self, session_id: str, workspace: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Fetch session metadata by ID (None when it belongs to another workspace)."""
+        condition, params = self._scope(workspace, "s.")
         with self._connection() as conn:
             cursor = conn.execute(
-                """
+                f"""
                 SELECT s.id, s.title, s.created_at, s.updated_at,
                        COUNT(m.id) AS message_count
                 FROM sessions s
                 LEFT JOIN messages m ON s.id = m.session_id
-                WHERE s.id = ?
+                WHERE s.id = ?{condition}
                 GROUP BY s.id
                 """,
-                (session_id,),
+                [session_id, *params],
             )
             row = cursor.fetchone()
             if not row:
@@ -186,6 +204,7 @@ class SessionStore:
         verification: Optional[Dict[str, Any]] = None,
         message_id: Optional[str] = None,
         auto_title: bool = True,
+        workspace: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Append a message to a session and touch updated_at."""
         mid = message_id or f"msg_{uuid.uuid4().hex[:12]}"
@@ -200,8 +219,8 @@ class SessionStore:
             if not session:
                 new_title = text.strip()[:40] if sender == "user" and text else "New Chat"
                 conn.execute(
-                    "INSERT INTO sessions (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
-                    (session_id, new_title, now, now),
+                    "INSERT INTO sessions (id, title, created_at, updated_at, workspace) VALUES (?, ?, ?, ?, ?)",
+                    (session_id, new_title, now, now, workspace),
                 )
             else:
                 # Auto-generate title on first user message if current title is default
@@ -250,21 +269,29 @@ class SessionStore:
             "timestamp": now,
         }
 
-    def rename_session(self, session_id: str, title: str) -> bool:
+    def rename_session(self, session_id: str, title: str, workspace: Optional[str] = None) -> bool:
         """Rename an existing session."""
         now = time.time()
+        condition, params = self._scope(workspace)
         with self._connection() as conn:
             cursor = conn.execute(
-                "UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?",
-                (title.strip(), now, session_id),
+                f"UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?{condition}",
+                [title.strip(), now, session_id, *params],
             )
             return cursor.rowcount > 0
 
-    def delete_session(self, session_id: str) -> bool:
+    def delete_session(self, session_id: str, workspace: Optional[str] = None) -> bool:
         """Delete a session and all its messages."""
+        condition, params = self._scope(workspace)
         with self._connection() as conn:
-            cursor = conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+            cursor = conn.execute(f"DELETE FROM sessions WHERE id = ?{condition}", [session_id, *params])
             return cursor.rowcount > 0
+
+    def session_owner(self, session_id: str) -> tuple[bool, Optional[str]]:
+        """(exists, workspace) for a session ID, regardless of who asks."""
+        with self._connection() as conn:
+            row = conn.execute("SELECT workspace FROM sessions WHERE id = ?", (session_id,)).fetchone()
+        return (row is not None, row["workspace"] if row else None)
 
     def get_recent_history(self, session_id: str, turns: int = 4) -> List[Dict[str, str]]:
         """Return the last `turns` user-assistant message pairs formatted for LLM consumption.

@@ -84,6 +84,8 @@ class StudyAssistant:
         path: Union[str, Path],
         batch_size: int = 64,
         progress_callback: Optional[Callable[[int, int], None]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        embedding_cache: Optional[Dict[str, List[float]]] = None,
     ) -> Dict[str, Any]:
         """Ingest a single document or an entire directory of course materials.
 
@@ -91,6 +93,8 @@ class StudyAssistant:
             path: File or directory path to ingest.
             batch_size: Embedding batch size.
             progress_callback: Optional callback reporting (processed_chunks, total_chunks).
+            metadata: Optional fields stamped on every chunk of a single file (e.g. its workspace).
+            embedding_cache: Optional precomputed vectors by chunk text (see IngestionPipeline.ingest_file).
 
         Returns:
             Dictionary detailing ingestion summary.
@@ -109,9 +113,14 @@ class StudyAssistant:
                 "details": res,
             }
         else:
+            kwargs: Dict[str, Any] = {}
             if progress_callback is not None:
-                return self.pipeline.ingest_file(target, progress_callback=progress_callback)
-            return self.pipeline.ingest_file(target)
+                kwargs["progress_callback"] = progress_callback
+            if metadata:
+                kwargs["extra_metadata"] = metadata
+            if embedding_cache:
+                kwargs["embedding_cache"] = embedding_cache
+            return self.pipeline.ingest_file(target, **kwargs)
 
     def search(
         self,
@@ -123,21 +132,25 @@ class StudyAssistant:
         min_similarity: Optional[float] = None,
         min_rerank_score: Optional[float] = None,
         use_web: bool = False,
+        where: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """Retrieve and rerank candidate document chunks without generating an answer.
 
-        Useful for source inspection and semantic document discovery.
+        Useful for source inspection and semantic document discovery. `where` is a Chroma
+        metadata filter (the public demo limits each visitor to their own workspace).
         """
         if not query or not query.strip():
             return []
 
         # 1. Retrieve candidates from ChromaDB
+        retrieve_kwargs: Dict[str, Any] = {"where": where} if where else {}
         candidates = self.retriever.retrieve(
             query=query.strip(),
             top_k=top_k,
             score_threshold=min_similarity,
             augment=augment,
             augment_mode=augment_mode,
+            **retrieve_kwargs,
         )
 
         # 2. Optionally augment with Tavily web search
@@ -172,6 +185,7 @@ class StudyAssistant:
         fallback_to_web: bool = False,
         session_id: Optional[str] = None,
         history: Optional[List[Dict[str, str]]] = None,
+        where: Optional[Dict[str, Any]] = None,
     ) -> Union[Dict[str, Any], Iterator[str]]:
         """Ask a question and receive a grounded answer with page-level citations.
 
@@ -188,6 +202,7 @@ class StudyAssistant:
             fallback_to_web: Whether to query Tavily if local knowledge base is empty or lacks context.
             session_id: Optional session identifier for conversation persistence.
             history: Optional list of past conversation turns.
+            where: Optional Chroma metadata filter limiting which indexed chunks may be used.
 
         Returns:
             Dictionary with 'answer', 'sources', 'chunks', 'model', and 'provider',
@@ -269,6 +284,7 @@ class StudyAssistant:
             min_similarity=min_similarity,
             min_rerank_score=min_rerank_score,
             use_web=use_web,
+            where=where,
         )
 
         # Fallback to Tavily if local search returned no relevant chunks and fallback_to_web is enabled

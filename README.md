@@ -254,9 +254,21 @@ The API is open by default for local development. On a shared deployment set the
 | :--- | :--- |
 | `DEMO_MODE=true` | `POST /api/clear` (wipe the index) returns 403 for everyone. |
 | `ADMIN_TOKEN=...` | `POST /api/clear` requires the `X-Admin-Token` header to match. Works with or without `DEMO_MODE`. |
-| `RATE_LIMIT_PER_MIN=30` | Per-client cap on `/api/ask`, `/api/ask/stream`, `/api/search`, `/api/flashcards` and `/api/ingest/file`; excess requests get `429` with `Retry-After`. `0` disables. |
+| `RATE_LIMIT_PER_MIN=20` | Per-client cap on `/api/ask`, `/api/ask/stream`, `/api/search`, `/api/flashcards`, `/api/ingest/file` and `/api/ingest/sample`; excess requests get `429` with `Retry-After`. `0` disables. |
+| `TRUSTED_PROXY_HOPS=3` | How many proxies in front of the app append to `X-Forwarded-For`. The client address is read that many entries from the right, so a client cannot spoof it. `3` was measured on Render (Cloudflare, Render edge, Render load balancer); `0` (default) uses the connecting address, which is right for local development. |
+| `DEMO_MAX_PER_MIN=30`, `DEMO_MAX_PER_DAY=500` | Caps on the same endpoints across all visitors together; excess requests get `503` with `Retry-After`. `0` disables. |
+| `DEMO_PAUSED=true` | Those endpoints return `503` at once, to stop spending credits without a redeploy. |
+| `WORKSPACE_ISOLATION=true` | Each browser gets a private workspace (an `HttpOnly` cookie). Visitors see and change only their own chats; their uploads are stored under `data/uploads/<workspace>/`, searched only for them, and served only to them. The bundled sample is shared with everyone. Defaults to the value of `DEMO_MODE`, so local development keeps one shared library. |
+| `ULTRA_MAX_PER_HOUR=20` | At most this many Nemotron 3 Ultra calls per hour; after that, questions are answered by Super. `0` (default) means no cap. |
 | `MAX_UPLOAD_MB=50` | Upload size cap (default 200). |
-| `CORS_ORIGINS=https://your-frontend.example` | Comma-separated allowed origins (default `*`). |
+| `VERIFY_TIMEOUT_S=3` | Time limit for the SymPy check of a generated answer. Checks run in a separate helper process (`python -m src.verification.worker`, about 80 MB); one that runs over is stopped and the answer is shown without the verified badge. |
+| `MAX_PENDING_UPLOADS=3`, `MAX_FILES_PER_WORKSPACE=5` | With workspace isolation: uploads one visitor may have in progress (`429` beyond that) and files one visitor may keep (`409`; uploading the same name replaces a file). `0` disables. |
+
+Uploads are indexed one at a time by a single worker, and a re-upload replaces the old chunks only after the new ones are stored. A file whose first bytes do not match its extension (for example an executable renamed to `.pdf`) is refused with `400` before it is saved.
+
+Questions are limited to 2,000 characters (`422` above that), and the UI enforces the same limit.
+| `CORS_ORIGINS=https://your-frontend.example` | Other sites allowed to call the API from a browser (comma-separated, or `*`). Default: none, because the bundled UI is same-origin (FastAPI serves it; in development Next proxies `/api`). |
+| `ADMIN_TOKEN` and `/metrics` | `/metrics` follows the same rule as `/api/clear`: open locally, requires `X-Admin-Token` when `ADMIN_TOKEN` is set, closed in `DEMO_MODE` without a token. |
 
 ---
 
@@ -314,7 +326,7 @@ study-assistant/
 │   ├── ISSUE_TEMPLATE/               # Feature issue templates (Prometheus, Tavily)
 │   └── workflows/
 │       ├── test.yml                  # CI: runs the Pytest suite on push and pull request
-│       └── keepalive.yml             # Pings the hosted demo every 10 minutes
+│       └── keepalive.yml             # Backup ping for the hosted demo (an external monitor keeps it awake)
 ├── bin/
 │   └── study-assistant               # Launcher: FastAPI + Next.js, plus --chat/--ask/--ingest
 ├── deploy/
@@ -335,7 +347,8 @@ study-assistant/
 │   ├── next.config.ts                # Dev: /api proxy to FastAPI; STATIC_EXPORT=1: static build
 │   └── package.json                  # React 19 & Next.js dependencies
 ├── sample_materials/
-│   └── astronomy_kepler.txt          # Sample course notes, auto-indexed in the demo
+│   ├── astronomy_kepler.txt          # Sample course notes, auto-indexed in the demo
+│   └── astronomy_kepler.index.json   # Precomputed sample vectors (python -m src.ingestion.sample_index)
 ├── src/
 │   ├── __init__.py                   # Top-level package exports (StudyAssistant facade)
 │   ├── assistant.py                  # Unified orchestrator & CLI (--chat / --ask / --ingest)

@@ -11,6 +11,11 @@ from src.ingestion.indexer import ChromaIndexer
 from src.ingestion.loader import DocumentLoader
 
 
+def text_key(text: str) -> str:
+    """Stable key for a chunk's text in a precomputed embedding file."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 class DocumentChunker:
     """Configurable wrapper around chunk_documents."""
 
@@ -58,6 +63,8 @@ class IngestionPipeline:
         chunk_size: Optional[int] = None,
         chunk_overlap: Optional[int] = None,
         progress_callback: Optional[Callable[[int, int], None]] = None,
+        extra_metadata: Optional[Dict[str, Any]] = None,
+        embedding_cache: Optional[Dict[str, List[float]]] = None,
     ) -> Dict[str, Any]:
         """Ingest a single document into the vector database.
 
@@ -66,6 +73,10 @@ class IngestionPipeline:
         3. Deletes any pre-existing chunks for this file to eliminate ghost chunks.
         4. Assigns deterministic chunk IDs.
         5. Embeds and upserts in safe batch sizes.
+
+        `extra_metadata` is stamped on every chunk (the public demo uses it for the owning workspace).
+        `embedding_cache` maps `text_key(chunk text)` to a vector computed earlier with the same model;
+        a batch whose texts are all in it is indexed without calling the embedding API.
         """
         path = Path(file_path).resolve()
         raw_docs = self.loader.load(path)
@@ -94,16 +105,22 @@ class IngestionPipeline:
         if progress_callback:
             progress_callback(0, total_chunks)
 
-        # Eliminate ghost chunks by removing prior entries for this file
-        if hasattr(self.indexer, "delete_by_path"):
-            self.indexer.delete_by_path(str(path))
-        elif hasattr(self.indexer, "delete"):
-            self.indexer.delete(where={"file_path": str(path)})
+        # Replace this file's chunks without a gap: the new ones are written first and the previous
+        # version's leftovers removed afterwards, so a failure part-way keeps the file searchable.
+        previous_ids = self._indexed_ids(str(path))
+        if previous_ids is None:
+            # Indexer cannot list a file's chunks: fall back to clearing them up front.
+            if hasattr(self.indexer, "delete_by_path"):
+                self.indexer.delete_by_path(str(path))
+            elif hasattr(self.indexer, "delete"):
+                self.indexer.delete(where={"file_path": str(path)})
 
         # Assign deterministic IDs, chunk indices, and ensure no None metadata values
         for idx, chunk in enumerate(chunks):
             chunk.metadata["chunk_index"] = idx
             chunk.metadata["chunk_id"] = self._generate_chunk_id(str(path), idx)
+            if extra_metadata:
+                chunk.metadata.update(extra_metadata)
             # Remove any keys with None value for ChromaDB compliance
             chunk.metadata = {k: v for k, v in chunk.metadata.items() if v is not None}
 
@@ -112,8 +129,11 @@ class IngestionPipeline:
         for i in range(0, total_chunks, self.batch_size):
             batch = chunks[i : i + self.batch_size]
             texts = [c.page_content for c in batch]
+            cached = [embedding_cache.get(text_key(t)) for t in texts] if embedding_cache else []
 
-            if hasattr(self.embedder, "embed_batch"):
+            if cached and all(vector is not None for vector in cached):
+                embeddings = cached
+            elif hasattr(self.embedder, "embed_batch"):
                 embeddings = self.embedder.embed_batch(
                     texts,
                     input_type="passage",
@@ -143,11 +163,24 @@ class IngestionPipeline:
             if progress_callback:
                 progress_callback(processed, total_chunks)
 
+        new_ids = {c.metadata["chunk_id"] for c in chunks}
+        leftovers = [chunk_id for chunk_id in previous_ids or [] if chunk_id not in new_ids]
+        if leftovers:
+            self.indexer.delete(ids=leftovers)
+
         return {
             "source": path.name,
             "chunks_count": len(chunks),
             "status": "success",
         }
+
+    def _indexed_ids(self, file_path: str) -> Optional[List[str]]:
+        """IDs already indexed for this file, or None when the indexer cannot list them."""
+        lister = getattr(self.indexer, "ids_for_path", None)
+        if not callable(lister):
+            return None
+        ids = lister(file_path)
+        return list(ids) if isinstance(ids, (list, tuple, set)) else None
 
     def ingest_directory(
         self, dir_path: Union[str, Path], recursive: bool = True
