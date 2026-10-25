@@ -190,6 +190,23 @@ else
 fi
 
 # 2. Start Next.js Frontend
+# A fresh clone has no frontend/node_modules; without it `npx next` downloads an unrelated Next.js
+# release with none of the app's packages, and every page answers 500. Install the locked versions first.
+if [ ! -d "$PROJECT_DIR/frontend/node_modules" ]; then
+    # Stop the backend directly: cleanup() exits with status 0, which would hide the failure.
+    if ! command -v npm >/dev/null 2>&1; then
+        echo "[ERROR] npm not found. Install Node.js 22 (includes npm), then run this again."
+        kill -TERM "$BACKEND_PID" 2>/dev/null || true
+        exit 1
+    fi
+    echo "[*] First run: installing frontend packages (npm ci, about a minute)..."
+    if ! (cd "$PROJECT_DIR/frontend" && npm ci --no-audit --no-fund); then
+        echo "[ERROR] npm ci failed in frontend/. See the npm output above."
+        kill -TERM "$BACKEND_PID" 2>/dev/null || true
+        exit 1
+    fi
+fi
+
 echo "[*] Starting Next.js Web Frontend on port ${FRONTEND_PORT}..."
 (
     cd "$PROJECT_DIR/frontend"
