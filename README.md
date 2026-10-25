@@ -8,7 +8,7 @@
 [![Nebius Token Factory](https://img.shields.io/badge/Nebius-Token%20Factory-00F5D4.svg)](https://tokenfactory.nebius.com/)
 [![Global AI Hackathon](https://img.shields.io/badge/Nebius%20x%20NVIDIA-Global%20AI%20Hackathon-76B900.svg?logo=nvidia&logoColor=white)](https://github.com/Khazar451/study-assistant)
 [![Vector DB](https://img.shields.io/badge/ChromaDB-Persistent%20HNSW-FF6B6B.svg)](https://www.trychroma.com/)
-[![Tests: 210](https://img.shields.io/badge/tests-210-brightgreen.svg)](tests/)
+[![Tests: 281](https://img.shields.io/badge/tests-281-brightgreen.svg)](tests/)
 [![CI Status](https://github.com/Khazar451/study-assistant/actions/workflows/test.yml/badge.svg)](https://github.com/Khazar451/study-assistant/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -20,8 +20,9 @@
 
 ## For judges
 
+- **Live demo:** [study-assistant-hfmk.onrender.com](https://study-assistant-hfmk.onrender.com). No sign-up. Notes on Kepler's laws are preloaded, so you can ask right away, or upload your own PDF, PPTX or text file (up to 50 MB). Each browser gets a private workspace: your chats, uploads and search results are not shared with other visitors. Limit: 20 questions per minute per visitor. The first page load can take about a minute if the free instance was asleep.
 - **Track:** Best Apps and Agents. Also eligible for Best Use of Tavily.
-- **Required runtime:** Chat completions go to **Nebius Token Factory** (`https://api.tokenfactory.nebius.com/v1/`). Answers use NVIDIA **Nemotron 3 Super** (`nvidia/nemotron-3-super-120b-a12b`); derivations, proofs and calculations are escalated to **Nemotron 3 Ultra** (`nvidia/Nemotron-3-Ultra-550b-a55b`) with automatic fallback to Super. Query rewrite and rerank use NVIDIA **Nemotron 3 Nano** (`nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B`). Embeddings stay on NVIDIA NIM (`nvidia/llama-nemotron-embed-vl-1b-v2`).
+- **Required runtime:** Chat completions go to **Nebius Token Factory** (`https://api.tokenfactory.nebius.com/v1/`). Answers use NVIDIA **Nemotron 3 Super** (`nvidia/nemotron-3-super-120b-a12b`); derivations, proofs and calculations are escalated to **Nemotron 3 Ultra** (`nvidia/Nemotron-3-Ultra-550b-a55b`) with automatic fallback to Super. Query rewrite, rerank and flashcards use NVIDIA **Nemotron 3 Nano** (`nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B`) with thinking turned off. Embeddings stay on NVIDIA NIM (`nvidia/llama-nemotron-embed-vl-1b-v2`).
 - **5-minute run:** copy `.env.example` to `.env.local`, set `NEBIUS_API_KEY`, `NVIDIA_API_KEY`, and `TAVILY_API_KEY`, then `bin/study-assistant`. Open the printed frontend URL. Under **Notes**, load a PDF (up to 200 MB). Ask a question with the source switch on **Notes**, **Web**, or **Both**. A cited page is drawn under the answer. Ask for a plot and a comparison and the reply includes a rendered graph and a markdown table.
 - **What makes it different:** math in answers is **checked with SymPy** and shown with a "verified" card (the model is not just trusted); every citation renders the **actual source page**; the student chooses **Notes / Web / Both** so grounding is explicit; chat history persists across sessions.
 - **Built during the submission window (opened 26 Aug 2026):** this repository's first commit is 17 Sep 2026, so the whole project is new work. Grounded RAG tutor, Token Factory Nemotron routing (Super, Nano, Ultra), Tavily academic search, numbered citations, KaTeX formulas, SymPy verification, cited-page images, 2D/3D plots, persistent chat memory, PPTX and slide-image ingestion, flashcards, Next.js + FastAPI UI, tests and CI.
@@ -194,7 +195,7 @@ The `StudyAssistant` facade coordinates all subsystems into a unified, high-leve
 
 ### 3.5 Automated Testing & CI/CD Pipeline (`tests/` & `.github/`)
 
-- **20 test modules, 210 tests, ~4 s, no live API calls.** Every external service (Token Factory, NVIDIA NIM, Tavily) is mocked. Coverage by area:
+- **25 test modules, 281 tests, under a minute, no live API calls.** Every external service (Token Factory, NVIDIA NIM, Tavily) is mocked. Coverage by area:
   - Ingestion: `test_loader`, `test_chunker`, `test_embedder`, `test_indexer`, `test_pipeline`, `test_vision`, `test_page_images`
   - Retrieval: `test_query_augmenter`, `test_retriever`, `test_reranker`, `test_tavily`
   - Generation: `test_generator` (provider switching, streaming, Ultra routing and fallback), `test_tutor_format`, `test_plots`, `test_providers`
@@ -202,7 +203,7 @@ The `StudyAssistant` facade coordinates all subsystems into a unified, high-leve
   - Orchestration and API: `test_assistant`, `test_api` (SSE streaming, ingestion jobs, flashcards, admin guard, rate limit)
   - Evaluation: `test_evaluation`
 - **Continuous Integration (CI):**
-  - Configured via `.github/workflows/test.yml` running Pytest automatically on push and pull request against Python 3.11. All 210 tests run green on GitHub Actions without consuming live API credits.
+  - Configured via `.github/workflows/test.yml` running Pytest automatically on push and pull request against Python 3.11. All 281 tests run green on GitHub Actions without consuming live API credits.
 
 ### 3.6 Modern Web Application & REST API Layer (`frontend/` & `src/api/`)
 
@@ -380,7 +381,7 @@ study-assistant/
 │   │   └── symbolic_verifier.py      # SymPy checks behind the "verified" math card
 │   └── memory/
 │       └── session_store.py          # SQLite chat sessions & history
-├── tests/                            # 20 test modules, 210 tests, all external APIs mocked
+├── tests/                            # 25 test modules, 281 tests, all external APIs mocked
 │   ├── conftest.py                   # Pytest fixtures & environment setup
 │   ├── test_api.py                   # REST endpoints, SSE streaming, demo guards (20 tests)
 │   ├── test_assistant.py             # Orchestrator & CLI (18 tests)
@@ -535,7 +536,7 @@ cd frontend && npm run dev
 
 ### 6.6 Running the Test Suite
 
-Execute the full suite of unit and integration tests (210 tests):
+Execute the full suite of unit and integration tests (281 tests):
 
 ```bash
 python -m pytest tests/ -v
@@ -574,7 +575,7 @@ How the project maps to the four equally weighted judging criteria of the **Nebi
 
 | Judging Criterion | Project Implementation & Proof Points |
 | :--- | :--- |
-| **Technological Implementation** | • Every chat completion (answers, query augmentation, reranking) runs on Nebius Token Factory: Nemotron 3 Super for grounded answers, Nemotron 3 Nano for the fast retrieval-side calls, Nemotron 3 Ultra for derivations, proofs and calculations (automatic fallback to Super).<br/>• NVIDIA NIM `nvidia/llama-nemotron-embed-vl-1b-v2` embeddings and `meta/llama-3.2-11b-vision-instruct` slide descriptions.<br/>• SymPy checks equations in answers before showing a "verified" card.<br/>• 20 test modules (210 tests) with GitHub Actions CI. |
+| **Technological Implementation** | • Every chat completion (answers, query augmentation, reranking) runs on Nebius Token Factory: Nemotron 3 Super for grounded answers, Nemotron 3 Nano for the fast retrieval-side calls, Nemotron 3 Ultra for derivations, proofs and calculations (automatic fallback to Super).<br/>• NVIDIA NIM `nvidia/llama-nemotron-embed-vl-1b-v2` embeddings and `meta/llama-3.2-11b-vision-instruct` slide descriptions.<br/>• SymPy checks equations in answers before showing a "verified" card.<br/>• 25 test modules (281 tests) with GitHub Actions CI. |
 | **Design** | • One app with three views: Academic Tutor, Course Materials and Study Flashcards.<br/>• Numbered citations render the cited PDF page under the answer; KaTeX formulas, 2D/3D plots and comparison tables.<br/>• Persistent chat history and a Notes / Web / Both source switch. |
 | **Potential Impact** | • Students preparing for exams get answers drawn only from their own course materials, with the source page shown, so they can check every claim. |
 | **Quality of the Idea** | • Combines grounded retrieval with symbolic math verification and model-size routing by task, instead of trusting a single model's answer. |
