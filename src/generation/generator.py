@@ -136,9 +136,13 @@ class StudyGenerator:
                 self.reasoning_model = reasoning.model
         self.last_model = self.model
 
+        # The SDK default (600 s, 2 retries) would hold a stalled request for up to half an hour;
+        # 120 s still leaves room for a long non-streamed Ultra answer.
         self.client = client or OpenAI(
             api_key=self.api_key,
             base_url=self.base_url,
+            timeout=120.0,
+            max_retries=1,
         )
 
     def prepare_context(self, context: Union[str, List[Dict[str, Any]]]) -> str:

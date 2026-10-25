@@ -50,9 +50,12 @@ class VisionDescriber:
         self._cache: Dict[str, str] = {}
 
         if self.api_key:
+            # One slide description per call; the SDK default (600 s) would stall an upload for minutes.
             self.client: Optional[OpenAI] = OpenAI(
                 api_key=self.api_key,
                 base_url=self.base_url,
+                timeout=60.0,
+                max_retries=1,
             )
         else:
             self.client = None
