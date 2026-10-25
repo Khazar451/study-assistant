@@ -267,7 +267,8 @@ The API is open by default for local development. On a shared deployment set the
 Uploads are indexed one at a time by a single worker, and a re-upload replaces the old chunks only after the new ones are stored. A file whose first bytes do not match its extension (for example an executable renamed to `.pdf`) is refused with `400` before it is saved.
 
 Questions are limited to 2,000 characters (`422` above that), and the UI enforces the same limit.
-| `CORS_ORIGINS=https://your-frontend.example` | Comma-separated allowed origins (default `*`). |
+| `CORS_ORIGINS=https://your-frontend.example` | Other sites allowed to call the API from a browser (comma-separated, or `*`). Default: none, because the bundled UI is same-origin (FastAPI serves it; in development Next proxies `/api`). |
+| `ADMIN_TOKEN` and `/metrics` | `/metrics` follows the same rule as `/api/clear`: open locally, requires `X-Admin-Token` when `ADMIN_TOKEN` is set, closed in `DEMO_MODE` without a token. |
 
 ---
 

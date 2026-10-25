@@ -41,7 +41,8 @@ app = FastAPI(
 )
 
 # --- Deployment hardening (all optional; local development stays open) ---
-# CORS_ORIGINS: comma-separated allowed origins ("*" by default for local dev).
+# CORS_ORIGINS: comma-separated origins allowed to call the API from another site ("*" for any). Unset = none:
+#   the UI itself is same-origin (FastAPI serves it, or Next proxies /api in development).
 # DEMO_MODE=true: the public demo cannot wipe the shared index unless ADMIN_TOKEN matches.
 # ADMIN_TOKEN: when set, destructive endpoints require the X-Admin-Token header.
 # RATE_LIMIT_PER_MIN: per-client cap on the endpoints that spend LLM credits (0 disables).
@@ -50,14 +51,15 @@ app = FastAPI(
 # DEMO_PAUSED=true: those endpoints return 503, so credits stop being spent at once.
 # WORKSPACE_ISOLATION: give each browser its own chats (defaults to DEMO_MODE; local development stays shared).
 # MAX_UPLOAD_MB: upload size cap (default 200).
-_cors_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",") if o.strip()] or ["*"]
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_cors_origins,
-    allow_credentials="*" not in _cors_origins,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+_cors_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
+if _cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_credentials="*" not in _cors_origins,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 _RATE_LIMITED_PATHS = {
     "/api/ask",
@@ -354,10 +356,11 @@ class OfflineFallbackReranker:
         self.mode = mode
 
     def rerank(self, query: str, chunks: List[Dict[str, Any]], top_n: int = 5, min_score: Optional[float] = None) -> List[Dict[str, Any]]:
-        sorted_chunks = sorted(chunks, key=lambda c: c.get("similarity", 1.0), reverse=True)
+        # The retriever reports cosine similarity as "similarity_score".
+        sorted_chunks = sorted(chunks, key=lambda c: c.get("similarity_score", 0.0), reverse=True)
         for i, c in enumerate(sorted_chunks):
             if "rerank_score" not in c:
-                c["rerank_score"] = c.get("similarity", 1.0 - (i * 0.05))
+                c["rerank_score"] = c.get("similarity_score", 1.0 - (i * 0.05))
         return sorted_chunks[:top_n]
 
 
@@ -463,9 +466,13 @@ class FlashcardsRequest(BaseModel):
 # --- API Routes ---
 
 
-@app.get("/metrics")
+@app.get("/metrics", dependencies=[Depends(require_admin)])
 def get_metrics() -> Response:
-    """Prometheus exposition endpoint for system and RAG observability."""
+    """Prometheus exposition endpoint for system and RAG observability.
+
+    Guarded like the other operator endpoints: open locally, X-Admin-Token when ADMIN_TOKEN is set,
+    and closed in the public demo without one.
+    """
     try:
         assistant = get_assistant()
         RAG_INDEXED_CHUNKS.set(assistant.count())
@@ -1186,7 +1193,7 @@ async def ask_stream(
                 {
                     "source": c.get("metadata", {}).get("source", "Unknown"),
                     "page": c.get("metadata", {}).get("page", 1),
-                    "score": c.get("rerank_score", c.get("similarity", 0.0)),
+                    "score": c.get("rerank_score", c.get("similarity_score", 0.0)),
                     "preview": c.get("text", "")[:180] + "...",
                     "source_type": c.get("metadata", {}).get("source_type", "document"),
                 }

@@ -55,9 +55,12 @@ class QueryAugmenter:
             self.extra_body = resolved.extra_body
         self.temperature = temperature
 
+        # Short helper calls on the fast model: fail fast rather than hold the question (SDK default is 600 s).
         self.client = OpenAI(
             api_key=self.api_key,
             base_url=self.base_url,
+            timeout=20.0,
+            max_retries=1,
         )
 
     def rewrite_query(self, query: str) -> str:

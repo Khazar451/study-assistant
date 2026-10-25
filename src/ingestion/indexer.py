@@ -6,6 +6,14 @@ from chromadb.api import ClientAPI
 from chromadb.api.types import ReadLevel
 
 
+def _id_or_none(*candidates: Any) -> Optional[str]:
+    """First usable ID; None and "" count as missing (str(None) would collide as the ID "None")."""
+    for value in candidates:
+        if value is not None and str(value) != "":
+            return str(value)
+    return None
+
+
 class ChromaIndexer:
     #Vector database indexer and retrieval manager powered by ChromaDB.
 
@@ -62,9 +70,9 @@ class ChromaIndexer:
         elif hasattr(chunk, "chunk_id") and chunk.chunk_id:
             chunk_id = str(chunk.chunk_id)
         elif hasattr(chunk, "metadata") and isinstance(chunk.metadata, dict):
-            chunk_id = str(chunk.metadata.get("id", chunk.metadata.get("chunk_id", ""))) or None
+            chunk_id = _id_or_none(chunk.metadata.get("id"), chunk.metadata.get("chunk_id"))
         elif isinstance(chunk, dict):
-            chunk_id = str(chunk.get("id", chunk.get("chunk_id", ""))) or None
+            chunk_id = _id_or_none(chunk.get("id"), chunk.get("chunk_id"))
 
         if not chunk_id:
             chunk_id = str(uuid.uuid4())
