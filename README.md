@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🎓 Study Assistant: Grounded Academic RAG Tutor
+#  Study Assistant: Grounded Academic RAG Tutor
 ### *Grounded academic tutor on NVIDIA Nemotron via Nebius Token Factory*
 
 [![Python Version](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
@@ -31,7 +31,7 @@
 
 ---
 
-## 📌 Table of Contents
+##  Table of Contents
 - [1. Executive Summary & Problem Statement](#1-executive-summary--problem-statement)
 - [2. System Architecture](#2-system-architecture)
 - [3. What We Have Built So Far (Current Implementation)](#3-what-we-have-built-so-far-current-implementation)
