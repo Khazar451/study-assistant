@@ -80,7 +80,7 @@ def test_a_different_embedding_model_falls_back_to_live_ingest(demo):
     demo.embedder.embed_batch.assert_called()
 
 
-def test_startup_reports_why_the_sample_is_missing(demo, monkeypatch):
+def test_startup_reports_why_the_sample_is_missing(demo, monkeypatch, caplog):
     monkeypatch.setenv("AUTO_INGEST_SAMPLE", "true")
     monkeypatch.setattr(server.time, "sleep", lambda _seconds: None)
     demo.embedder.model = "some/other-embedder"
@@ -93,7 +93,11 @@ def test_startup_reports_why_the_sample_is_missing(demo, monkeypatch):
 
     status = TestClient(app).get("/api/status").json()
     assert status["sample_ready"] is False
-    assert "Embedding request failed" in status["sample_error"]
+    # Visitors see a reference, not the exception; the log holds the cause under the same reference.
+    ref = status["sample_error"].split("(ref ")[1].split(")")[0]
+    assert "Embedding request failed" not in status["sample_error"]
+    logged = [r for r in caplog.records if f"(ref {ref})" in r.getMessage()]
+    assert logged and "Embedding request failed" in str(logged[0].exc_info[1])
 
 
 def test_pipeline_uses_cached_vectors_only_when_every_text_is_cached():

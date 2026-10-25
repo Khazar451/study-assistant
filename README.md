@@ -261,6 +261,7 @@ The API is open by default for local development. On a shared deployment set the
 | `WORKSPACE_ISOLATION=true` | Each browser gets a private workspace (an `HttpOnly` cookie). Visitors see and change only their own chats; their uploads are stored under `data/uploads/<workspace>/`, searched only for them, and served only to them. The bundled sample is shared with everyone. Defaults to the value of `DEMO_MODE`, so local development keeps one shared library. |
 | `ULTRA_MAX_PER_HOUR=20` | At most this many Nemotron 3 Ultra calls per hour; after that, questions are answered by Super. `0` (default) means no cap. |
 | `MAX_UPLOAD_MB=50` | Upload size cap (default 200). |
+| `VERIFY_TIMEOUT_S=3` | Time limit for the SymPy check of a generated answer. Checks run in a separate helper process (`python -m src.verification.worker`, about 80 MB); one that runs over is stopped and the answer is shown without the verified badge. |
 | `MAX_PENDING_UPLOADS=3`, `MAX_FILES_PER_WORKSPACE=5` | With workspace isolation: uploads one visitor may have in progress (`429` beyond that) and files one visitor may keep (`409`; uploading the same name replaces a file). `0` disables. |
 
 Uploads are indexed one at a time by a single worker, and a re-upload replaces the old chunks only after the new ones are stored. A file whose first bytes do not match its extension (for example an executable renamed to `.pdf`) is refused with `400` before it is saved.

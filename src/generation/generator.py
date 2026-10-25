@@ -212,6 +212,25 @@ class StudyGenerator:
         self.last_model = self.model
         return self.client.chat.completions.create(model=self.model, max_tokens=self.max_tokens, **kwargs)
 
+    def complete_text(self, system_prompt: str, user_prompt: str, max_tokens: int = 1500) -> str:
+        """One short non-streaming completion for structured helper output (e.g. flashcards JSON).
+
+        Uses the provider's fast model with thinking off when one is configured (Nemotron Nano on
+        Token Factory), so reasoning cannot consume the token budget; any <think> block is stripped.
+        """
+        fast = providers.resolve_llm_provider("fast")
+        same_provider = fast is not None and fast.name == self.provider
+        model = fast.model if same_provider else self.model
+        extra = {"extra_body": fast.extra_body} if same_provider and fast.extra_body else {}
+        response = self.client.chat.completions.create(
+            model=model,
+            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+            temperature=0.2,
+            max_tokens=max_tokens,
+            **extra,
+        )
+        return providers.strip_reasoning(response.choices[0].message.content or "")
+
     def generate(
         self,
         query: str,

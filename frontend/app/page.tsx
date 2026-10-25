@@ -692,6 +692,8 @@ export default function StudyAssistantApp() {
   const [flippedCards, setFlippedCards] = useState<{ [id: string]: boolean }>({});
   const [cardScores, setCardScores] = useState<{ [id: string]: "review" | "mastered" }>({});
   const [isGeneratingCards, setIsGeneratingCards] = useState(false);
+  // True when the server could not get AI-written cards and returned excerpts from the notes instead.
+  const [cardsFromExcerpts, setCardsFromExcerpts] = useState(false);
   const [flashcardTopic, setFlashcardTopic] = useState("");
 
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -982,6 +984,9 @@ export default function StudyAssistantApp() {
                     msg.id === tutorMsgId ? { ...msg, text: streamedAnswer } : msg
                   )
                 );
+              } else if (event.type === "error") {
+                // The server sends a short, safe message with a reference ID; show it as the reply.
+                streamedAnswer = event.error || "Something went wrong. Please try again.";
               } else if (event.type === "chunks") {
                 finalChunks = event.chunks || [];
               } else if (event.type === "done") {
@@ -1270,6 +1275,7 @@ export default function StudyAssistantApp() {
       const data = await res.json();
       if (res.ok && data.flashcards) {
         setFlashcards(data.flashcards);
+        setCardsFromExcerpts(Boolean(data.fallback));
         setFlippedCards({});
       } else {
         alert(data.detail || "Unable to generate flashcards. Please ingest documents first.");
@@ -1988,6 +1994,12 @@ export default function StudyAssistantApp() {
                 </p>
               </div>
             ) : (
+              <>
+              {cardsFromExcerpts && (
+                <p role="status" style={{ marginTop: "16px", color: "var(--text-muted)", fontSize: "13px" }}>
+                  AI flashcards are unavailable right now, so these cards show excerpts from your notes instead.
+                </p>
+              )}
               <div className="cards-grid" style={{ marginTop: "20px" }}>
                 {flashcards.map((card) => {
                   const isFlipped = flippedCards[card.id];
@@ -2048,6 +2060,7 @@ export default function StudyAssistantApp() {
                   );
                 })}
               </div>
+              </>
             )}
           </div>
         )}
