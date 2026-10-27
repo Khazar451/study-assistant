@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from src import providers
-from src.generation.tutor_format import polish_tutor_answer
+from src.generation.tutor_format import open_math_closer, polish_tutor_answer
 
 # Automatically load environment variables from .env.local or .env
 load_dotenv(".env.local")
@@ -20,11 +20,9 @@ CUT_SHORT_NOTE = "*(Answer cut short. Ask me to continue.)*"
 def cut_short_ending(text: str) -> str:
     """What to append when the model hit its token limit mid-answer.
 
-    An open $$ would otherwise be closed at the very end by the math cleanup, turning everything
-    after it, prose and headings included, into one formula that cannot render.
+    A formula left open (\\[, \\( or $$) is closed first, so the note is not read as part of it.
     """
-    close = "\n$$" if text.count("$$") % 2 else ""
-    return f"{close}\n\n{CUT_SHORT_NOTE}"
+    return f"{open_math_closer(text)}\n\n{CUT_SHORT_NOTE}"
 
 
 class StudyGenerator:
@@ -53,12 +51,12 @@ class StudyGenerator:
         "5. Format: Use ATX headings (##, ###). Never duplicate hashes like '## ##'. Do not use underlined setext headings. Do not use emoji.\n"
         "7. Mathematics: Write all formulas, expressions, variables, and substitutions using strict LaTeX. "
         "CRITICAL: Never use raw Unicode math symbols (like ∫, ∑, ∂, √, →, ≠, ≤, ≥); always use standard LaTeX commands (\\int, \\sum, \\partial, \\sqrt, \\to, \\ne, \\le, \\ge). "
-        "Wrap all inline symbols, substitutions, and short expressions in single dollars, like $u = e^x$, $dv = \\cos x\\,dx$, $v = \\sin x$, $\\int u\\,dy$, and $\\partial f/\\partial x$. "
-        "Every standalone derivation step or full equation goes on its own line between exactly one pair of double dollars (never output consecutive '$$ $$'):\n"
-        "$$\n\\int u\\,dv = uv - \\int v\\,du\n$$\n"
-        "Never leave formulas as plain text. Never write bare backslashes to break lines. "
-        "Use \\\\, before differentials (like \\,dx). CRITICAL: Never put citations inside math mode. Never write \\text{[1]}, \\tag{[1]}, or [1] inside $$ or $. "
-        "ALWAYS place citations strictly outside the dollar delimiters on the regular markdown text line, like: $$...$$\\n[1].\n"
+        "Wrap all inline symbols, substitutions, and short expressions in \\( and \\), like \\(u = e^x\\), \\(dv = \\cos x\\,dx\\), \\(v = \\sin x\\), \\(\\int u\\,dy\\), and \\(\\partial f/\\partial x\\). "
+        "Every standalone derivation step or full equation goes on its own lines between \\[ and \\]:\n"
+        "\\[\n\\int u\\,dv = uv - \\int v\\,du\n\\]\n"
+        "Never use dollar signs ($ or $$) for math. Never leave formulas as plain text. Never write bare backslashes to break lines. "
+        "Use \\\\, before differentials (like \\,dx). CRITICAL: Never put citations inside math mode. Never write \\text{[1]}, \\tag{[1]}, or [1] inside \\( \\) or \\[ \\]. "
+        "ALWAYS place citations outside the math, on the regular text after the closing \\) or \\], like: \\[ ... \\] [1].\n"
         "8. Graphs: when a curve or surface would teach the idea, add one plot block and no other code:\n"
         "```plot\n"
         "{\"dim\": 2, \"expr\": \"x**2\", \"xmin\": -3, \"xmax\": 3, \"title\": \"y = x^2\"}\n"
@@ -77,7 +75,7 @@ class StudyGenerator:
         "3. Teach: one-sentence core idea, then ## and ### headings. Contrast exam-confusable ideas only when both sides are in the excerpts.\n"
         "4. End with ## Check-in and one follow-up question.\n"
         "5. ATX headings only (##, ###, never duplicate hashes like '## ##'). No emoji. No underlined headings.\n"
-        "6. Mathematics: Write all formulas and symbols in valid LaTeX. Never use raw Unicode math characters (like ∫, ∑, ∂, √, →); use \\int, \\sum, \\partial, \\sqrt, \\to. Wrap short inline formulas and variables in $...$, and standalone equations in $$...$$ on their own line with valid LaTeX and \\\\, before differentials. Never put citations inside math delimiters; place them after closing $$ or $."
+        "6. Mathematics: Write all formulas and symbols in valid LaTeX. Never use raw Unicode math characters (like ∫, ∑, ∂, √, →); use \\int, \\sum, \\partial, \\sqrt, \\to. Wrap short inline formulas and variables in \\( ... \\), and standalone equations in \\[ ... \\] on their own lines with valid LaTeX and \\\\, before differentials. Never use dollar signs ($ or $$) for math. Never put citations inside math delimiters; place them after the closing \\) or \\]."
     )
 
     GENERAL_SYSTEM_PROMPT = (
@@ -88,7 +86,7 @@ class StudyGenerator:
         "2. Open with a one-sentence core idea. Use ## and ### headings. Contrast ideas students mix up on exams.\n"
         "3. End with ## Check-in and exactly one question about their course, or an offer to quiz them.\n"
         "4. ATX headings only (##, ###, never duplicate hashes like '## ##'). No emoji. No underlined headings. No lifestyle or trivia unless it is a standard exam point.\n"
-        "5. Mathematics: Write all formulas and symbols in valid LaTeX. Never use raw Unicode math characters (like ∫, ∑, ∂, √, →); use \\int, \\sum, \\partial, \\sqrt, \\to. Wrap short inline formulas and variables in $...$, and standalone equations in $$...$$ on their own line with valid LaTeX and \\\\, before differentials."
+        "5. Mathematics: Write all formulas and symbols in valid LaTeX. Never use raw Unicode math characters (like ∫, ∑, ∂, √, →); use \\int, \\sum, \\partial, \\sqrt, \\to. Wrap short inline formulas and variables in \\( ... \\), and standalone equations in \\[ ... \\] on their own lines with valid LaTeX and \\\\, before differentials. Never use dollar signs ($ or $$) for math."
     )
 
 
