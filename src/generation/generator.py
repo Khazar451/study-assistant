@@ -14,6 +14,18 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
+CUT_SHORT_NOTE = "*(Answer cut short. Ask me to continue.)*"
+
+
+def cut_short_ending(text: str) -> str:
+    """What to append when the model hit its token limit mid-answer.
+
+    An open $$ would otherwise be closed at the very end by the math cleanup, turning everything
+    after it, prose and headings included, into one formula that cannot render.
+    """
+    close = "\n$$" if text.count("$$") % 2 else ""
+    return f"{close}\n\n{CUT_SHORT_NOTE}"
+
 
 class StudyGenerator:
     """Answers academic and study questions strictly grounded in retrieved document context.
@@ -196,25 +208,37 @@ class StudyGenerator:
             return self.GENERAL_SYSTEM_PROMPT
         return self.system_prompt
 
+    # Derivations and proofs need room: the reasoning model gets this budget, and so does the answer
+    # model when it stands in for it, so a fallback answer is not cut off mid-formula.
+    REASONING_MAX_TOKENS = 4000
+    # A 550B reasoning model can take minutes to start under load; other calls keep the client's 120 s.
+    REASONING_TIMEOUT_S = 300.0
+
     def _create_completion(self, query: str, messages: List[Dict[str, str]], stream: bool):
         """Call the chat API, escalating hard questions to the reasoning model with a safe fallback."""
         kwargs: Dict[str, Any] = {"messages": messages, "temperature": self.temperature}
         if stream:
             kwargs["stream"] = True
-        if self.reasoning_model and providers.needs_deep_reasoning(query):
+        deep = bool(self.reasoning_model) and providers.needs_deep_reasoning(query)
+        budget = max(self.max_tokens, self.REASONING_MAX_TOKENS) if deep else self.max_tokens
+        if deep:
+            # Logged at WARNING so the reason shows in the host's log (INFO is not printed by default).
             if not providers.reserve_reasoning_call():
-                logger.info("Hourly cap for %s reached; using %s", self.reasoning_model, self.model)
+                logger.warning("Hourly cap for %s reached; %s answers instead", self.reasoning_model, self.model)
             else:
                 try:
                     response = self.client.chat.completions.create(
-                        model=self.reasoning_model, max_tokens=max(self.max_tokens, 4000), **kwargs
+                        model=self.reasoning_model, max_tokens=budget, timeout=self.REASONING_TIMEOUT_S, **kwargs
                     )
                     self.last_model = self.reasoning_model
                     return response
                 except Exception as exc:  # model unavailable / rate limited: fall back to the answer model
-                    logger.warning("Reasoning model %s failed (%s); using %s", self.reasoning_model, exc, self.model)
+                    logger.warning(
+                        "Reasoning model %s failed (%s: %s); %s answers instead",
+                        self.reasoning_model, type(exc).__name__, exc, self.model,
+                    )
         self.last_model = self.model
-        return self.client.chat.completions.create(model=self.model, max_tokens=self.max_tokens, **kwargs)
+        return self.client.chat.completions.create(model=self.model, max_tokens=budget, **kwargs)
 
     def complete_text(self, system_prompt: str, user_prompt: str, max_tokens: int = 1500) -> str:
         """One short non-streaming completion for structured helper output (e.g. flashcards JSON).
@@ -290,10 +314,12 @@ class StudyGenerator:
 
         response = self._create_completion(query, messages, stream=False)
 
+        raw = providers.strip_reasoning(response.choices[0].message.content or "")
+        if getattr(response.choices[0], "finish_reason", None) == "length":
+            raw += cut_short_ending(raw)
+
         answer_text = polish_tutor_answer(
-            providers.normalize_citation_brackets(
-                providers.strip_reasoning(response.choices[0].message.content or "")
-            ),
+            providers.normalize_citation_brackets(raw),
             allowed_sources=allowed_sources if allowed_sources is not None else sources,
             grounding=grounding,
         )
@@ -353,11 +379,22 @@ class StudyGenerator:
         messages.append({"role": "user", "content": user_content})
 
         stream = self._create_completion(query, messages, stream=True)
+        finish = {"reason": None}
 
-        tokens = (
-            chunk.choices[0].delta.content
-            for chunk in stream
-            if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content
-        )
-        for token in providers.filter_reasoning_stream(tokens):
-            yield providers.normalize_citation_brackets(token)
+        def tokens() -> Iterator[str]:
+            for chunk in stream:
+                if not chunk.choices:
+                    continue
+                choice = chunk.choices[0]
+                if getattr(choice, "finish_reason", None):
+                    finish["reason"] = choice.finish_reason
+                if choice.delta and choice.delta.content:
+                    yield choice.delta.content
+
+        streamed: List[str] = []
+        for token in providers.filter_reasoning_stream(tokens()):
+            token = providers.normalize_citation_brackets(token)
+            streamed.append(token)
+            yield token
+        if finish["reason"] == "length":
+            yield cut_short_ending("".join(streamed))

@@ -168,22 +168,34 @@ _reasoning_calls: Deque[float] = deque()
 _reasoning_lock = threading.Lock()
 
 
+def reasoning_cap() -> int:
+    """ULTRA_MAX_PER_HOUR (0 or unset = no cap)."""
+    try:
+        return max(0, int(os.getenv("ULTRA_MAX_PER_HOUR", "0")))
+    except ValueError:
+        return 0
+
+
+def reasoning_calls_last_hour() -> int:
+    """Heavy-model calls made in the last 60 minutes (shown in /api/status)."""
+    now = time.time()
+    with _reasoning_lock:
+        while _reasoning_calls and now - _reasoning_calls[0] >= 3600:
+            _reasoning_calls.popleft()
+        return len(_reasoning_calls)
+
+
 def reserve_reasoning_call() -> bool:
     """Count one heavy-model call against ULTRA_MAX_PER_HOUR (process-wide; 0 or unset = no cap).
 
     Returns False once the hour's budget is spent, so the caller answers with the everyday model.
     """
-    try:
-        limit = max(0, int(os.getenv("ULTRA_MAX_PER_HOUR", "0")))
-    except ValueError:
-        limit = 0
-    if not limit:
-        return True
+    limit = reasoning_cap()
     now = time.time()
     with _reasoning_lock:
         while _reasoning_calls and now - _reasoning_calls[0] >= 3600:
             _reasoning_calls.popleft()
-        if len(_reasoning_calls) >= limit:
+        if limit and len(_reasoning_calls) >= limit:
             return False
         _reasoning_calls.append(now)
         return True
