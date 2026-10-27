@@ -506,6 +506,9 @@ def get_status() -> Dict[str, Any]:
         # Whether the bundled sample can be searched, and why startup indexing failed if it cannot.
         "sample_ready": _is_indexed(assistant, SAMPLE_PATH.resolve()),
         "sample_error": _sample_state["error"],
+        # Whether derivations can still go to the heavy model this hour (0 cap = unlimited).
+        "ultra_calls_last_hour": providers.reasoning_calls_last_hour(),
+        "ultra_cap": providers.reasoning_cap(),
         "persist_directory": assistant.persist_directory,
         "generation_model": _str_attr(generator, "model"),
         "augment_model": _str_attr(augmenter, "model"),
