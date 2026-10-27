@@ -241,6 +241,117 @@ _BRACKET_DISPLAY = re.compile(
 )
 _TEX_INLINE = re.compile(r"\\\(([\s\S]*?)\\\)")
 _TEX_DISPLAY = re.compile(r"\\\[([\s\S]*?)\\\]")
+# \( \) \[ \] but not the \\[4pt] line break inside aligned environments
+_TEX_MARK = re.compile(r"(?<!\\)\\([()\[\]])")
+_BLANK_LINE = re.compile(r"\n[^\S\n]*\n")
+_HEADING_LINE = re.compile(r"\n[^\S\n]{0,3}#{1,6}\s")
+_TABLE_LINE = re.compile(r"\n[^\S\n]*\|")
+# What a stray $$ is followed by on its line: only citations, punctuation or a table bar
+_STRAY_TAIL = re.compile(r"(?:\s|\[\d{1,2}\]|\[(?:Web )?Source:[^\]]*\]|[.,;:!?|)])+", re.IGNORECASE)
+
+
+def open_math_closer(text: str) -> str:
+    """The mark that closes a formula `text` leaves open, or "" when none is open."""
+    if text.count("$$") % 2:
+        return "\n$$"
+    marks = _TEX_MARK.findall(text)
+    if marks and marks[-1] == "[":
+        return "\n\\]"
+    if marks and marks[-1] == "(":
+        return "\\)"
+    return ""
+
+
+def _pair_tex_delimiters(text: str) -> str:
+    """Turn \\( \\) into $...$ and \\[ \\] into $$...$$, dropping any mark without a partner.
+
+    Opening and closing marks differ, so a stray one is recognised and removed instead of
+    pairing with the next formula and turning the prose between them into math.
+    """
+    marks = list(_TEX_MARK.finditer(text))
+    if not marks:
+        return text
+    pairs: List[tuple] = []
+    opener: Optional[re.Match] = None
+    for mark in marks:
+        kind = mark.group(1)
+        if kind in "([":
+            opener = mark  # an earlier opener with no closer yet is stray
+            continue
+        if opener is None or (opener.group(1), kind) not in {("(", ")"), ("[", "]")}:
+            continue
+        body = text[opener.end():mark.start()]
+        broken = _BLANK_LINE.search(body) if kind == ")" else _HEADING_LINE.search("\n" + body.strip())
+        if not broken:
+            pairs.append((opener, mark))
+        opener = None
+
+    pieces: List[str] = []
+    cursor = 0
+    for opener_mark, closer_mark in pairs:
+        pieces.append(_TEX_MARK.sub("", text[cursor:opener_mark.start()]))
+        body = text[opener_mark.end():closer_mark.start()]
+        if opener_mark.group(1) == "(":
+            body = " ".join(body.split())
+            pieces.append(f"${body}$" if body else "")
+        else:
+            body = _BLANK_LINE.sub("\n", body.strip())
+            pieces.append(f"\n$$\n{body}\n$$\n" if body else "")
+        cursor = closer_mark.end()
+    pieces.append(_TEX_MARK.sub("", text[cursor:]))
+    return "".join(pieces)
+
+
+def _balance_display_dollars(text: str) -> str:
+    """Drop a $$ that opens nothing instead of letting it swallow the rest of the answer.
+
+    An opening $$ is kept only when its closing $$ comes before any heading or paragraph break,
+    and it is not followed on its line by just a citation or punctuation, as in the model's
+    "exponent $n$ $$ [2]." A formula left open at the very end of the answer is closed.
+    """
+    marks = [m.start() for m in re.finditer(r"\$\$", text)]
+    if not marks:
+        return text
+    drop = set()
+    close_at_end = False
+    index = 0
+    while index < len(marks):
+        start = marks[index] + 2
+        line_end = text.find("\n", start)
+        tail = text[start:] if line_end == -1 else text[start:line_end]
+        if tail.strip() and _STRAY_TAIL.fullmatch(tail):
+            drop.add(marks[index])
+            index += 1
+            continue
+        end = marks[index + 1] if index + 1 < len(marks) else len(text)
+        line_start = text.rfind("\n", 0, marks[index]) + 1
+        lead = text[line_start:marks[index]].strip()
+        in_table = lead.startswith("|")
+        # Blank lines just inside a $$ that sits alone on its line are harmless
+        body = text[start:end].rstrip() if lead else text[start:end].strip()
+        if (
+            _BLANK_LINE.search(body)
+            or _HEADING_LINE.search("\n" + body)
+            or _TABLE_LINE.search("\n" + body)
+            or (in_table and "\n" in text[start:end])
+        ):
+            drop.add(marks[index])
+            index += 1
+            continue
+        if index + 1 == len(marks):
+            close_at_end = True
+        index += 2
+    if not drop and not close_at_end:
+        return text
+    pieces: List[str] = []
+    cursor = 0
+    for at in sorted(drop):
+        before = text[cursor:at].rstrip(" \t")
+        pieces.append(before + " " if text[at + 2:at + 3].isalnum() else before)
+        cursor = at + 2
+    pieces.append(text[cursor:])
+    result = "".join(pieces)
+    return result + "\n$$" if close_at_end else result
 
 
 def _repair_latex(formula: str) -> str:
@@ -434,6 +545,10 @@ def normalize_math(text: str) -> str:
     # Convert raw Unicode math symbols (like ∫, ∑, ∂, √, →) into standard LaTeX
     text = _convert_unicode_math(text)
 
+    # The model writes \( \) and \[ \]; the page renders $ and $$. Stray marks are dropped here,
+    # before anything pairs dollars, so one stray cannot turn the following prose into math.
+    text = _balance_display_dollars(_pair_tex_delimiters(text))
+
     # Pre-clean: extract citations out of math and collapse duplicate/empty delimiters
     text = _clean_math_citations(text)
     text = re.sub(r"\$\$(?:\s*\$\$)+", "$$", text)
@@ -463,7 +578,7 @@ def normalize_math(text: str) -> str:
     result = re.sub(r"\$\$\s*([.,;:!?])\s*\$\$", r"\1", result)
     result = _clean_math_citations(result)
     if result.count("$$") % 2 != 0:
-        result += "\n$$"
+        result = _balance_display_dollars(result)
     return _ensure_math_spacing(result)
 
 
