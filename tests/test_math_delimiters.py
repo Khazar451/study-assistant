@@ -112,6 +112,36 @@ def test_math_holding_only_a_citation_becomes_a_plain_citation(cited):
     assert re.search(r"\$n\$ +\[2\]", cleaned)
 
 
+@pytest.mark.parametrize(
+    "cell",
+    [
+        "\\[ \\frac{dy}{dx} = \\frac{dy}{du}\\frac{du}{dx} \\]",
+        "$$\\frac{dy}{dx} = \\frac{dy}{du}\\frac{du}{dx}$$",
+        "$$\\frac{dy}{dx} = \\frac{dy}{du}\\frac{du}{dx} [3]$$",
+        "\\frac{dy}{dx} = \\frac{dy}{du}\\,\\frac{du}{dx} \\quad\\text{evaluated at } u = g(x) \\text{ and then at } x",
+    ],
+)
+def test_math_in_a_table_cell_stays_inline_so_the_row_survives(cell):
+    # From real answers: "| Aspect | Leibniz notation \[ ... \] | Functional notation \( ... \) |"
+    table = (
+        f"## Exam contrast\n\n| Aspect | Leibniz notation {cell} | Functional \\(f'(g(x))g'(x)\\) |\n"
+        "|---|---|---|\n| Where | evaluate at \\(u=g(x)\\) [3] | built in [2] |\n\nCheck-in."
+    )
+    cleaned = normalize_math(table)
+    rows = [line for line in cleaned.splitlines() if line.lstrip().startswith("|")]
+    assert len(rows) == 3, cleaned
+    assert all(line.rstrip().endswith("|") for line in rows), cleaned
+    assert "$$" not in cleaned
+    assert "\\frac{dy}{du}" in rows[0] and "$f'(g(x))g'(x)$" in rows[0]
+
+
+def test_display_math_outside_tables_still_gets_its_own_lines():
+    cleaned = normalize_math("Intro.\n\n| A | B |\n|---|---|\n| $x$ | $y$ |\n\n\\[\nx^2 = 1\n\\]")
+    blocks, _ = _math_blocks(cleaned)
+    assert [b.strip() for b in blocks] == ["x^2 = 1"]
+    assert "| $x$ | $y$ |" in cleaned
+
+
 def test_stray_double_dollar_before_a_citation_is_dropped():
     cleaned = normalize_math("Holds for any real exponent $n$ $$ [2].\n\n## Proof\n\n$$\nx^2\n$$")
     _assert_prose_outside_math(cleaned)

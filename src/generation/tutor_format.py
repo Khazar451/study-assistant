@@ -250,6 +250,8 @@ _TEX_MARK = re.compile(r"(?<!\\)\\([()\[\]])")
 _BLANK_LINE = re.compile(r"\n[^\S\n]*\n")
 _HEADING_LINE = re.compile(r"\n[^\S\n]{0,3}#{1,6}\s")
 _TABLE_LINE = re.compile(r"\n[^\S\n]*\|")
+_TABLE_BLOCK = re.compile(r"(?m)^[^\S\n]*\|[^\n]*(?:\n[^\S\n]*\|[^\n]*)*")
+_TABLE_DISPLAY = re.compile(r"\$\$([^\n]+?)\$\$")
 _CITATIONS_ONLY = re.compile(r"\s*(?:(?:\[\d{1,2}\]|\[(?:Web )?Source:[^\]]*\])\s*,?\s*)+[.,;:]?\s*", re.IGNORECASE)
 # What a stray $$ is followed by on its line: only citations, punctuation or a table bar
 _STRAY_TAIL = re.compile(r"(?:\s|\[\d{1,2}\]|\[(?:Web )?Source:[^\]]*\]|[.,;:!?|)])+", re.IGNORECASE)
@@ -296,9 +298,11 @@ def _pair_tex_delimiters(text: str) -> str:
     for opener_mark, closer_mark in pairs:
         pieces.append(_TEX_MARK.sub("", text[cursor:opener_mark.start()]))
         body = text[opener_mark.end():closer_mark.start()]
+        line_start = text.rfind("\n", 0, opener_mark.start()) + 1
+        in_table = text[line_start:opener_mark.start()].lstrip().startswith("|")
         if _CITATIONS_ONLY.fullmatch(body):
             pieces.append(" ".join(body.split()))  # \([3][4]\) is a citation, not math
-        elif opener_mark.group(1) == "(":
+        elif opener_mark.group(1) == "(" or in_table:  # display math cannot sit in a table row
             body = " ".join(body.split())
             pieces.append(f"${body}$" if body else "")
         else:
@@ -405,9 +409,9 @@ def _is_display_formula(formula: str) -> bool:
     return len(formula) > 75
 
 
-def _math_span(formula: str) -> str:
+def _math_span(formula: str, inline: bool = False) -> str:
     repaired = _repair_latex(formula)
-    if _is_display_formula(repaired):
+    if not inline and _is_display_formula(repaired):
         return f"\n$$\n{repaired}\n$$\n"
     return f"${repaired}$"
 
@@ -425,7 +429,7 @@ def _looks_like_inline_math(body: str) -> bool:
     return False
 
 
-def _formula_end(text: str, start: int) -> int:
+def _formula_end(text: str, start: int, in_table: bool = False) -> int:
     """End index of one TeX expression, including nested braces and parentheses."""
     brace = 0
     paren = 0
@@ -444,7 +448,7 @@ def _formula_end(text: str, start: int) -> int:
             if paren == 0:
                 break
             paren -= 1
-        elif char in "\n$":
+        elif char in "\n$" or (in_table and char == "|" and brace == 0 and paren == 0):
             break
         elif char == "." and brace == 0 and paren == 0:
             nxt = text[index + 1] if index + 1 < len(text) else ""
@@ -461,13 +465,13 @@ def _formula_end(text: str, start: int) -> int:
     return index
 
 
-def _extract_formula_runs(segment: str) -> str:
+def _extract_formula_runs(segment: str, inline: bool = False) -> str:
     pieces: List[str] = []
     index = 0
     while index < len(segment):
         if segment[index] == "\\" and _MATH_COMMAND.match(segment, index):
-            end = _formula_end(segment, index)
-            pieces.append(_math_span(segment[index:end]))
+            end = _formula_end(segment, index, inline)
+            pieces.append(_math_span(segment[index:end], inline))
             index = end
             continue
         pieces.append(segment[index])
@@ -475,8 +479,8 @@ def _extract_formula_runs(segment: str) -> str:
     return "".join(pieces)
 
 
-def _process_bare_text(text: str) -> str:
-    text = _extract_formula_runs(text)
+def _process_bare_text(text: str, inline: bool = False) -> str:
+    text = _extract_formula_runs(text, inline)
     pieces: List[str] = []
     index = 0
     while index < len(text):
@@ -496,7 +500,7 @@ def _process_bare_text(text: str) -> str:
             end = _matching_paren(text, index)
             body = text[index + 1:end] if end != -1 else ""
             if end != -1 and "$" not in body and _looks_like_inline_math(body):
-                pieces.append(_math_span(body))
+                pieces.append(_math_span(body, inline))
                 index = end + 1
                 continue
         pieces.append(text[index])
@@ -504,20 +508,20 @@ def _process_bare_text(text: str) -> str:
     return "".join(pieces)
 
 
-def _wrap_bare_math(segment: str) -> str:
-    segment = _TEX_DISPLAY.sub(lambda match: _math_span(match.group(1)), segment)
-    segment = _TEX_INLINE.sub(lambda match: _math_span(match.group(1)), segment)
-    segment = _BRACKET_DISPLAY.sub(lambda match: _math_span(match.group(1)), segment)
+def _wrap_bare_math(segment: str, inline: bool = False) -> str:
+    segment = _TEX_DISPLAY.sub(lambda match: _math_span(match.group(1), inline), segment)
+    segment = _TEX_INLINE.sub(lambda match: _math_span(match.group(1), inline), segment)
+    segment = _BRACKET_DISPLAY.sub(lambda match: _math_span(match.group(1), inline), segment)
 
     pieces: List[str] = []
     cursor = 0
     for match in _MATH_DELIM.finditer(segment):
         if match.start() > cursor:
-            pieces.append(_process_bare_text(segment[cursor:match.start()]))
+            pieces.append(_process_bare_text(segment[cursor:match.start()], inline))
         pieces.append(match.group(0))
         cursor = match.end()
     if cursor < len(segment):
-        pieces.append(_process_bare_text(segment[cursor:]))
+        pieces.append(_process_bare_text(segment[cursor:], inline))
     wrapped = "".join(pieces)
     return re.sub(r"\(\s*(\$\$(?:[\s\S]*?)\$\$|\$[^$]+\$)\s*\)", r"\1", wrapped)
 
@@ -544,6 +548,25 @@ def _ensure_math_spacing(s: str) -> str:
     return "".join(out)
 
 
+def _normalize_segment(text: str, inline: bool = False) -> str:
+    """Repair the math in `text` and wrap bare TeX; `inline` keeps every formula on its line."""
+    pieces: List[str] = []
+    cursor = 0
+    for match in _MATH_DELIM.finditer(text):
+        if match.start() > cursor:
+            pieces.append(_wrap_bare_math(text[cursor:match.start()], inline))
+        block = match.group(0)
+        if block.startswith("$$"):
+            body = _repair_latex(block[2:-2])
+            pieces.append(f"${body}$" if inline else f"\n$$\n{body}\n$$\n")
+        else:
+            pieces.append(f"${_repair_latex(block[1:-1])}$")
+        cursor = match.end()
+    if cursor < len(text):
+        pieces.append(_wrap_bare_math(text[cursor:], inline))
+    return "".join(pieces)
+
+
 def normalize_math(text: str) -> str:
     """Put bare TeX into $$...$$ and fix differentials written with a comma."""
     if not text:
@@ -555,6 +578,7 @@ def normalize_math(text: str) -> str:
     # The model writes \( \) and \[ \]; the page renders $ and $$. Stray marks are dropped here,
     # before anything pairs dollars, so one stray cannot turn the following prose into math.
     text = _balance_display_dollars(_pair_tex_delimiters(text))
+    text = _TABLE_BLOCK.sub(lambda m: _TABLE_DISPLAY.sub(lambda d: f"${d.group(1).strip()}$", m.group(0)), text)
 
     # Pre-clean: extract citations out of math and collapse duplicate/empty delimiters
     text = _clean_math_citations(text)
@@ -562,23 +586,14 @@ def normalize_math(text: str) -> str:
     text = re.sub(r"\$\$\s*\$\$", "", text)
     text = re.sub(r"(?<!\$)\$(?!\$)\s*(?<!\$)\$(?!\$)", "", text)
 
+    # A table row must stay on one line, so math inside tables is always inline
     pieces: List[str] = []
     cursor = 0
-    for match in _MATH_DELIM.finditer(text):
-        if match.start() > cursor:
-            pieces.append(_wrap_bare_math(text[cursor:match.start()]))
-        block = match.group(0)
-        if block.startswith("$$"):
-            body = _repair_latex(block[2:-2])
-            pieces.append(f"\n$$\n{body}\n$$\n")
-        elif block.startswith("$"):
-            body = _repair_latex(block[1:-1])
-            pieces.append(f"${body}$")
-        else:
-            pieces.append(block)
-        cursor = match.end()
-    if cursor < len(text):
-        pieces.append(_wrap_bare_math(text[cursor:]))
+    for table in _TABLE_BLOCK.finditer(text):
+        pieces.append(_normalize_segment(text[cursor:table.start()]))
+        pieces.append(_normalize_segment(table.group(0), inline=True))
+        cursor = table.end()
+    pieces.append(_normalize_segment(text[cursor:]))
 
     result = "".join(pieces)
     result = re.sub(r"\$\$\s*\$\$", "", result)
