@@ -14,12 +14,17 @@
 
 *Developed for the **Nebius x NVIDIA Global AI Hackathon**.*
 
+**[▶ Watch the demo video](https://www.youtube.com/watch?v=HfnytIiQpa0)** · **[Try the live demo](https://study-assistant-hfmk.onrender.com)**
+
+[![Study Assistant demo video](https://img.youtube.com/vi/HfnytIiQpa0/hqdefault.jpg)](https://www.youtube.com/watch?v=HfnytIiQpa0)
+
 ---
 
 </div>
 
 ## For judges
 
+- **Demo video:** [youtube.com/watch?v=HfnytIiQpa0](https://www.youtube.com/watch?v=HfnytIiQpa0)
 - **Live demo:** [study-assistant-hfmk.onrender.com](https://study-assistant-hfmk.onrender.com). No sign-up. Notes on Kepler's laws are preloaded, so you can ask right away, or upload your own PDF, PPTX or text file (up to 50 MB). Each browser gets a private workspace: your chats, uploads and search results are not shared with other visitors. Limit: 20 questions per minute per visitor. The first page load can take about a minute if the free instance was asleep.
 - **Track:** Best Apps and Agents. Also eligible for Best Use of Tavily.
 - **Required runtime:** Chat completions go to **Nebius Token Factory** (`https://api.tokenfactory.nebius.com/v1/`). Answers use NVIDIA **Nemotron 3 Super** (`nvidia/nemotron-3-super-120b-a12b`); derivations, proofs and calculations are escalated to **Nemotron 3 Ultra** (`nvidia/Nemotron-3-Ultra-550b-a55b`) with automatic fallback to Super. Query rewrite, rerank and flashcards use NVIDIA **Nemotron 3 Nano** (`nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B`) with thinking turned off. Embeddings stay on NVIDIA NIM (`nvidia/llama-nemotron-embed-vl-1b-v2`).
