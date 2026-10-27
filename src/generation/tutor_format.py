@@ -612,7 +612,8 @@ def setext_to_atx(text: str) -> str:
     # Normalize non-breaking spaces
     text = re.sub(r"[\u00A0\u2000-\u200B]", " ", text)
     # Collapse duplicate hashes: '## ## Title' -> '## Title'
-    text = re.sub(r"(?m)^(#{1,6})\s*(#{1,6})\s*", r"\1 ", text)
+    # (the space between the runs is required, or a plain '## Title' splits into '#' + '#')
+    text = re.sub(r"(?m)^(#{1,6})[^\S\n]+(#{1,6})[^\S\n]*", r"\1 ", text)
     # Ensure space after hashes: '##Title' -> '## Title'
     text = re.sub(r"(?m)^(#{1,6})([^\s#\n])", r"\1 \2", text)
     # Ensure headings that are glued to the previous line get preceded by a newline

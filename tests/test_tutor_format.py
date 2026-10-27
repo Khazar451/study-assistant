@@ -1,3 +1,5 @@
+import re
+
 from src.generation.tutor_format import (
     bind_numbered_citations,
     drop_unverified_citations,
@@ -137,6 +139,13 @@ def test_duplicate_heading_hashes_collapsed():
     assert "## ##" not in polished
     assert "### Deep dive" in polished
     assert "### ###" not in polished
+
+
+def test_plain_headings_keep_their_level():
+    polished = setext_to_atx("## Statement of the rule\nText.\n### Exam contrast\nMore.\n#### Detail")
+    assert re.search(r"(?m)^## Statement of the rule$", polished)
+    assert re.search(r"(?m)^### Exam contrast$", polished)
+    assert re.search(r"(?m)^#### Detail$", polished)
 
 
 def test_math_citation_extracted_outside_display_math():
