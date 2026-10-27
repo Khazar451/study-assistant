@@ -1,6 +1,7 @@
 """Answers written with \\( \\) and \\[ \\] render, and a stray delimiter cannot turn the prose after it into math."""
 
 import re
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -87,6 +88,28 @@ def test_real_stray_dollars_answer_keeps_its_prose_out_of_math():
     assert any("\\lim_{z\\to x}" in block for block in blocks)
     assert any("3x^{2}" in block for block in blocks)
     assert "Check-in\n" in cleaned and "essential [2] [4] [5]." in cleaned
+
+
+def test_real_bracket_answer_with_cited_math_keeps_its_layout():
+    # Raw Nemotron 3 Super answer in the new format; it wraps citations in math, like \([3][4][5]\)
+    raw = (Path(__file__).parent / "fixtures" / "super_power_rule_raw.md").read_text(encoding="utf-8")
+    cleaned = polish_tutor_answer(raw)
+    _assert_prose_outside_math(cleaned)
+    blocks, _ = _math_blocks(cleaned)
+    assert len(blocks) == 2
+    assert re.search(r"(?m)^#+ How to Apply the Rule\s*$", cleaned)
+    assert re.search(r"(?m)^1\. \*\*Identify the exponent\*\* \$n\$", cleaned)
+    assert "irrational exponents [3][4][5]." in cleaned
+    assert "$[" not in cleaned
+
+
+@pytest.mark.parametrize("cited", ["$[2]$", "$$[2]$$", "\\([2]\\)", "\\[ [2] \\]"])
+def test_math_holding_only_a_citation_becomes_a_plain_citation(cited):
+    cleaned = normalize_math(f"Holds for any real $n$ {cited}.\n\n## Proof\n\n$$\nx^2\n$$")
+    _assert_prose_outside_math(cleaned)
+    blocks, _ = _math_blocks(cleaned)
+    assert [b.strip() for b in blocks] == ["x^2"]
+    assert re.search(r"\$n\$ +\[2\]", cleaned)
 
 
 def test_stray_double_dollar_before_a_citation_is_dropped():

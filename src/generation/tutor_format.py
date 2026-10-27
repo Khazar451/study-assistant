@@ -172,6 +172,8 @@ def _clean_math_citations(text: str) -> str:
         if not cites:
             return match.group(0)
         cite_str = " ".join(cites) + punct
+        if not cleaned_body.strip():
+            return f" {cite_str}"  # math that held only a citation; an empty $$ would pair with the next formula
         return f"\n$$\n{cleaned_body}\n$$\n{cite_str}\n"
 
     # 1. Process display math $$ ... $$
@@ -193,6 +195,8 @@ def _clean_math_citations(text: str) -> str:
         if not cites:
             return match.group(0)
         cite_str = " ".join(cites) + punct
+        if not cleaned_body.strip():
+            return cite_str  # "$[3]$" would otherwise become a stray "$$ [3]"
         return f"${cleaned_body}$ {cite_str}"
 
     # 2. Process inline math $ ... $
@@ -246,6 +250,7 @@ _TEX_MARK = re.compile(r"(?<!\\)\\([()\[\]])")
 _BLANK_LINE = re.compile(r"\n[^\S\n]*\n")
 _HEADING_LINE = re.compile(r"\n[^\S\n]{0,3}#{1,6}\s")
 _TABLE_LINE = re.compile(r"\n[^\S\n]*\|")
+_CITATIONS_ONLY = re.compile(r"\s*(?:(?:\[\d{1,2}\]|\[(?:Web )?Source:[^\]]*\])\s*,?\s*)+[.,;:]?\s*", re.IGNORECASE)
 # What a stray $$ is followed by on its line: only citations, punctuation or a table bar
 _STRAY_TAIL = re.compile(r"(?:\s|\[\d{1,2}\]|\[(?:Web )?Source:[^\]]*\]|[.,;:!?|)])+", re.IGNORECASE)
 
@@ -291,7 +296,9 @@ def _pair_tex_delimiters(text: str) -> str:
     for opener_mark, closer_mark in pairs:
         pieces.append(_TEX_MARK.sub("", text[cursor:opener_mark.start()]))
         body = text[opener_mark.end():closer_mark.start()]
-        if opener_mark.group(1) == "(":
+        if _CITATIONS_ONLY.fullmatch(body):
+            pieces.append(" ".join(body.split()))  # \([3][4]\) is a citation, not math
+        elif opener_mark.group(1) == "(":
             body = " ".join(body.split())
             pieces.append(f"${body}$" if body else "")
         else:
